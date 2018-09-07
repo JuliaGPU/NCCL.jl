@@ -15,17 +15,9 @@ const return_codes = Dict{ncclResult_t,Symbol}(
     1  => :UNHANDLED_CUDA_ERROR,
     2  => :SYSTEM_ERROR,
     3  => :INTERNAL_ERROR,
-    4  => :INVALID_DEVICE_POINTER,
-    5  => :INVALID_RANK,
-    6  => :UNSUPPORTED_DEVICE_COUNT,
-    7  => :DEVICE_NOT_FOUND,
-    8  => :INVALID_DEVICE_INDEX,
-    9  => :LIB_WRAPPER_NOT_SET,
-    10 => :CUDA_MALLOC_FAILED,
-    11 => :RANK_MISMATCH,
-    12 => :INVALID_ARGUMENT,
-    13 => :INVALID_TYPE,
-    14 => :INVALID_OPERATION
+    4  => :INVALID_ARGUMENT,
+    5  => :INVALID_USAGE,
+    6  => :NUM_RESULTS,
 )
 for code in return_codes
     @eval const $(code[2]) = NCCLError($(code[1]))
