@@ -17,7 +17,8 @@ include("base.jl")
 include("communicator.jl")
 
 @show id = UniqueID()
-@show comm = Communicator(length(CUDAdrv.devices()), id, 0);
+@show comm = Communicator(length(CUDAdrv.devices()), id, 0)
+@show comm = Communicator(CUDAdrv.devices())
 
 
 end
