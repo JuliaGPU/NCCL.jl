@@ -25,19 +25,28 @@ end
 
 # creates a new communicator (multi thread/process version)
 function Communicator(nranks, comm_id, rank)
-    handle_ref = Ref{ncclComm_t}()
+    handle_ref = Ref{ncclComm_t}(C_NULL)
     @apicall(:ncclCommInitRank, (Ptr{ncclComm_t}, Cint, ncclUniqueId_t, Cint), 
-             handle_ref,nranks, comm_id, rank)
-
-    Communicator(handle_ref[])
+             handle_ref, nranks, comm_id, rank)
+    c = Communicator(handle_ref[])
+    finalizer(c) do x
+        @apicall(:ncclCommDestroy, (ncclComm_t,), x.handle)
+    end
+    return c
 end 
 
 # creates a clique of communicators (single process version)
 function Communicator(devices)
-    ndev = length(devices)
-    comms = Vector{ncclComm_t}(undef, ndev)
-    devlist = Cint[dev.ordinal for dev in devices]
+    ndev    = length(devices)
+    comms   = Vector{ncclComm_t}(undef, ndev)
+    devlist = Cint.([i-1 for i in 1:ndev])
     @apicall(:ncclCommInitAll, (Ptr{ncclComm_t}, Cint, Ptr{Cint}), comms, ndev, devlist)
-    Communicator.(comms)
+    cs = Communicator.(comms)
+    finalizer(cs) do xs
+        for x in xs 
+            @apicall(:ncclCommDestroy, (ncclComm_t,), x.handle)
+        end
+    end
+    return cs
 end
 
