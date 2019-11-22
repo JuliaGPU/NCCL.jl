@@ -48,3 +48,50 @@ end
 function Base.showerror(io::IO, err::NCCLError)
     @printf(io, "NCCL error %d: %s", err.code, description(err))
 end
+
+@enum ncclRedOp_t::Cint begin
+    ncclSum    = 0
+    ncclProd   = 1 
+    ncclMax    = 2 
+    ncclMin    = 3 
+    ncclNumOps = 4
+end
+
+@enum ncclDataType_t::Cint begin
+    ncclInt8    = 0
+    #ncclChar    = 0
+    ncclUint8   = 1
+    ncclInt32   = 2
+    #ncclInt     = 2
+    ncclUint32  = 3
+    ncclInt64   = 4
+    ncclUInt64  = 5
+    ncclFloat16 = 6
+    ncclFloat32 = 7
+    ncclFloat64 = 8
+    ncclNumTypes = 9 
+end
+
+function ncclDataType(T::DataType)
+    if T == Float32
+        return ncclFloat32 
+    elseif T == Float16
+        return ncclFloat16 
+    elseif T == Float64
+        return ncclFloat64 
+    elseif T == Int8
+        return ncclInt8 
+    elseif T == Char 
+        return ncclInt8 
+    elseif T == Int32
+        return ncclInt32 
+    elseif T == UInt32
+        return ncclUint32 
+    elseif T == Int64
+        return ncclInt64 
+    elseif T == UInt64
+        return ncclUint64 
+    else
+        throw(ArgumentError("ncclDataType equivalent for input type $T does not exist!"))
+    end
+end

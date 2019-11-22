@@ -2,7 +2,9 @@ module NCCL
 
 using Printf
 
-import CUDAdrv
+using CuArrays
+import CUDAdrv, CUDAnative
+using CUDAdrv: CUstream, CuStream, CuPtr
 
 const ext = joinpath(dirname(@__DIR__), "deps", "ext.jl")
 isfile(ext) || error("NCCL.jl has not been built, please run Pkg.build(\"NCCL\").")
@@ -15,7 +17,9 @@ end
 
 include("base.jl")
 include("communicator.jl")
+include("group.jl")
+include("collective.jl")
 
-export UniqueID, Communicator
+export UniqueID, Communicator, rank, groupStart, groupEnd, Allreduce!, Broadcast!
 
 end
