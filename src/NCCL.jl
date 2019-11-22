@@ -20,6 +20,6 @@ include("communicator.jl")
 include("group.jl")
 include("collective.jl")
 
-export UniqueID, Communicator, rank, groupStart, groupEnd, Allreduce!, Broadcast!
+export UniqueID, Communicator, rank, groupStart, groupEnd, Allreduce!, Broadcast!, Reduce!
 
 end
