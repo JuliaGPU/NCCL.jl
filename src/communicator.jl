@@ -28,6 +28,15 @@ end
 
 
 # creates a new communicator (multi thread/process version)
+"""
+   Communicator(nranks, uid, rank)
+
+Creates a new Communicator (multi thread/process version)
+`rank` must be between `0` and `nranks-1` and unique within a communicator
+clique. Each rank is associated to a CUDA device which has to be set before
+calling `Communicator`. Implicitly synchroniszed with other ranks so it must
+be called by different threads/processes or used within `group`.
+"""
 function Communicator(nranks, comm_id, rank)
     handle_ref = Ref{ncclComm_t}(C_NULL)
     ncclCommInitRank(handle_ref, nranks, comm_id.internal, rank)
@@ -69,4 +78,14 @@ function rank(comm::Communicator)
     rank_ref = Ref{Cint}(C_NULL)
     ncclCommUserRank(comm.handle, rank_ref)
     return rank_ref[]
+end
+
+function abort(comm::Communicator)
+    ncclCommAbort(comm.handle)
+end
+
+function getError(comm::Communicator)
+    ref = Ref{ncclResult_t}()
+    ncclCommGetAsyncError(comm.handle, ref)
+    return NCCLError(ref[])
 end

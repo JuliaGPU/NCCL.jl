@@ -30,3 +30,17 @@ function ncclDataType(T::DataType)
         throw(ArgumentError("ncclDataType equivalent for input type $T does not exist!"))
     end
 end
+
+function ncclReductionOp(T::DataType)
+    if T == typeof(+)
+        return ncclSum
+    elseif T == typeof(*)
+        return ncclProd
+    elseif T == typeof(min)
+        return ncclMin
+    elseif T == typeof(max)
+        return ncclMax
+    else
+        throw(ArgumentError("ncclReductionOp equivalent for input function type $T does not exist!"))
+    end
+end

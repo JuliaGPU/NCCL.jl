@@ -2,6 +2,12 @@
 
 export Allreduce!, Broadcast!, Reduce!, Allgather!, ReduceScatter!
 
+function allReduce!(::Op, sendbuf, recvbuf, comm::Communicator; stream=CUDAdrv.CuDefaultStream()) where Op
+    op = ncclReductionOp(Op)
+    @assert size(sendbuf) == size(recvbuf)
+    Allreduce!(sendbuf, recvbuf, length(sendbuf), op, comm, stream=stream)
+end
+
 function Allreduce!(sendbuf, recvbuf, count::Integer, op, comm::Communicator; stream::CuStream=CuDefaultStream() )
     data_type = ncclDataType(eltype(recvbuf))
     ncclAllReduce(sendbuf, recvbuf, count, data_type, op, comm.handle, stream)
