@@ -4,11 +4,11 @@ using Test
 @testset "NCCL.jl" begin
     @testset "Communicator" begin
         comms = Communicator(CUDAdrv.devices())
-        @test device(comms[1]) == 0
-        @test device(comms[2]) == 1
-        @test size(comms[1])   == 2
-        @test rank(comms[1])   == 0 
-        @test rank(comms[2])   == 1 
+        for (i,dev) in enumerate(CUDAdrv.devices())
+            @test rank(comms[i]) == i-1
+            @test device(comms[i]) == i-1
+            @test size(comms[i]) == length(CUDAdrv.devices())
+        end
         id    = UniqueID()
         #=num_devs = length(CUDAdrv.devices())
         comm  = Communicator(num_devs, id, 0)
@@ -31,7 +31,7 @@ using Test
             Allreduce!(sendbuf[ii], recvbuf[ii], 512, NCCL.ncclSum, comms[ii], stream=streams[ii])
         end
         groupEnd()
-        answer = sum(1:length(devs)) 
+        answer = sum(1:length(devs))
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)
             crecv = collect(recvbuf[ii])
@@ -105,7 +105,7 @@ using Test
             Allgather!(sendbuf[ii], recvbuf[ii], 512, comms[ii], stream=streams[ii])
         end
         groupEnd()
-        answer = vec(repeat(1:length(devs), inner=512))  
+        answer = vec(repeat(1:length(devs), inner=512))
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)
             crecv = collect(recvbuf[ii])
@@ -127,7 +127,7 @@ using Test
         end
         groupStart()
         for ii in 1:length(devs)
-            ReduceScatter!(sendbuf[ii], recvbuf[ii], 2, NCCL.ncclSum, comms[ii], stream=streams[ii])
+            ReduceScatter!(sendbuf[ii], recvbuf[ii], length(devs), NCCL.ncclSum, comms[ii], stream=streams[ii])
         end
         groupEnd()
         for (ii, dev) in enumerate(devs)
