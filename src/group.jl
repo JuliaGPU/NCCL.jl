@@ -1,4 +1,6 @@
 # Group calls
 
-groupStart() = @apicall(:ncclGroupStart, ())
-groupEnd()   = @apicall(:ncclGroupEnd, ())
+export groupStart, groupEnd
+
+groupStart() = ncclGroupStart()
+groupEnd()   = ncclGroupEnd()
