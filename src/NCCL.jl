@@ -35,8 +35,8 @@ function __init__()
     end
 
     try
-        if version() < v"2"
-            silent || @warn "NCCL.jl only supports NCCL 2.x (you are using $(version()))"
+        if version() < v"2.4"
+            silent || @warn "NCCL.jl only supports NCCL 2.4 or higher (you are using $(version()))"
         end
     catch ex
         # don't actually fail to keep the package loadable
