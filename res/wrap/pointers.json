@@ -1,0 +1,174 @@
+{
+    "ncclGetVersion": {
+        "version": "Ptr"
+    },
+    "pncclGetVersion": {
+        "version": "Ptr"
+    },
+    "ncclGetUniqueId": {
+        "uniqueId": "Ptr"
+    },
+    "pncclGetUniqueId": {
+        "uniqueId": "Ptr"
+    },
+    "ncclCommInitRank": {
+        "comm": "Ptr",
+        "nranks": null,
+        "commId": null,
+        "rank": null
+    },
+    "pncclCommInitRank": {
+        "comm": "Ptr",
+        "nranks": null,
+        "commId": null,
+        "rank": null
+    },
+    "ncclCommInitAll": {
+        "comm": "Ptr",
+        "ndev": null,
+        "devlist": "Ptr"
+    },
+    "pncclCommInitAll": {
+        "comm": "Ptr",
+        "ndev": null,
+        "devlist": "Ptr"
+    },
+    "ncclCommGetAsyncError": {
+        "comm": null,
+        "asyncError": "Ptr"
+    },
+    "pncclCommGetAsyncError": {
+        "comm": null,
+        "asyncError": "Ptr"
+    },
+    "ncclCommCount": {
+        "comm": null,
+        "count": "Ptr"
+    },
+    "pncclCommCount": {
+        "comm": null,
+        "count": "Ptr"
+    },
+    "ncclCommCuDevice": {
+        "comm": null,
+        "device": "Ptr"
+    },
+    "pncclCommCuDevice": {
+        "comm": null,
+        "device": "Ptr"
+    },
+    "ncclCommUserRank": {
+        "comm": null,
+        "rank": "Ptr"
+    },
+    "pncclCommUserRank": {
+        "comm": null,
+        "rank": "Ptr"
+    },
+    "ncclReduce": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "op": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclReduce": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "op": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "ncclBcast": {
+        "buff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclBcast": {
+        "buff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "ncclBroadcast": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclBroadcast": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "root": null,
+        "comm": null,
+        "stream": null
+    },
+    "ncclAllReduce": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "op": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclAllReduce": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "count": null,
+        "datatype": null,
+        "op": null,
+        "comm": null,
+        "stream": null
+    },
+    "ncclReduceScatter": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "recvcount": null,
+        "datatype": null,
+        "op": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclReduceScatter": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "recvcount": null,
+        "datatype": null,
+        "op": null,
+        "comm": null,
+        "stream": null
+    },
+    "ncclAllGather": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "sendcount": null,
+        "datatype": null,
+        "comm": null,
+        "stream": null
+    },
+    "pncclAllGather": {
+        "sendbuff": "CuPtr",
+        "recvbuff": "CuPtr",
+        "sendcount": null,
+        "datatype": null,
+        "comm": null,
+        "stream": null
+    }
+}
