@@ -9,10 +9,10 @@ using Test
             @test device(comms[i]) == i-1
             @test size(comms[i]) == length(CUDAdrv.devices())
         end
-        id    = UniqueID()
-        #=num_devs = length(CUDAdrv.devices())
-        comm  = Communicator(num_devs, id, 0)
-        @test device(comm) == 0=#
+        #id    = UniqueID()
+        #num_devs = length(CUDAdrv.devices())
+        #comm  = Communicator(num_devs, id, 0)
+        #@test device(comm) == 0
     end
     @testset "Allreduce!" begin
         devs  = CUDAdrv.devices()
@@ -36,6 +36,32 @@ using Test
             device!(ii - 1)
             crecv = collect(recvbuf[ii])
             @test all(crecv .== answer)
+        end
+        # more complex example?
+        recvbuf = Vector{CuMatrix{Float64}}(undef, length(devs))
+        sendbuf = Vector{CuMatrix{Float64}}(undef, length(devs))
+        streams = Vector{CuStream}(undef, length(devs))
+        m       = 256
+        k       = 512
+        n       = 256
+        As      = [rand(m, k) for i in 1:length(devs)]
+        Bs      = [rand(k, n) for i in 1:length(devs)]
+        C       = sum(As .* Bs)
+        for (ii, dev) in enumerate(devs)
+            CUDAnative.device!(ii - 1)
+            sendbuf[ii] = cu(As[ii]) * cu(Bs[ii])
+            recvbuf[ii] = CuArrays.zeros(Float64, m, n)
+            streams[ii] = CuStream()
+        end
+        groupStart()
+        for ii in 1:length(devs)
+            Allreduce!(sendbuf[ii], recvbuf[ii], m*n, NCCL.ncclSum, comms[ii], stream=streams[ii])
+        end
+        groupEnd()
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test crecv ≈ C rtol=1e-6
         end
     end
     @testset "Broadcast!" begin
