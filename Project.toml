@@ -10,6 +10,7 @@ CuArrays = "3a865a2d-5b23-5a0f-bc46-62713ec82fae"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
 [compat]
+CUDAdrv = "5.0"
 julia = "1.0"
 
 [extras]
