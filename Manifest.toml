@@ -1,3 +1,5 @@
+# This file is machine-generated - editing it directly is not advised
+
 [[AbstractFFTs]]
 deps = ["LinearAlgebra"]
 git-tree-sha1 = "051c95d6836228d120f5f4b984dd5aba1624f716"
@@ -38,9 +40,9 @@ version = "6.2.2"
 
 [[CUDAnative]]
 deps = ["Adapt", "BinaryProvider", "CEnum", "CUDAapi", "CUDAdrv", "Cthulhu", "DataStructures", "InteractiveUtils", "LLVM", "Libdl", "MacroTools", "Pkg", "Printf", "TimerOutputs"]
-git-tree-sha1 = "4168c40ca3ff3475bc29a20a09ab7b910c4b8ef0"
+git-tree-sha1 = "d1fc99635d0002c8a819b78cb1f441eb44310725"
 uuid = "be33ccc6-a3ff-5ff2-a52e-74243cff1e17"
-version = "3.0.1"
+version = "3.0.2"
 
 [[CodeTracking]]
 deps = ["InteractiveUtils", "UUIDs"]
