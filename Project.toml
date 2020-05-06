@@ -10,7 +10,7 @@ CuArrays = "3a865a2d-5b23-5a0f-bc46-62713ec82fae"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
 [compat]
-CEnum = "0.2"
+CEnum = "0.2, 0.3"
 CUDAapi = "2, 3, 4"
 CUDAdrv = "4.0.4, 5, 6"
 CuArrays = "1.4.7, 2"
