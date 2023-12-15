@@ -1,227 +1,413 @@
-# Julia wrapper for header: nccl.h
-# Automatically generated using Clang.jl
+module LibNCCL
 
+using NCCL_jll
+export NCCL_jll
 
-function ncclGetVersion(version)
-    @check @runtime_ccall((:ncclGetVersion, libnccl), ncclResult_t,
-                          (Ptr{Cint},),
-                          version)
+using CEnum
+
+const NULL = C_NULL
+const INT_MIN = typemin(Cint)
+
+import CUDA.APIUtils: @checked
+
+function check(f)
+    res = f()::ncclResult_t
+    if res != ncclSuccess
+        throw(NCCLError(err))
+    end
+    return
 end
 
-function pncclGetVersion(version)
-    @check @runtime_ccall((:pncclGetVersion, libnccl), ncclResult_t,
-                          (Ptr{Cint},),
-                          version)
+
+struct ncclConfig_v21700
+    size::Cint
+    magic::Cuint
+    version::Cuint
+    blocking::Cint
+    cgaClusterSize::Cint
+    minCTAs::Cint
+    maxCTAs::Cint
+    netName::Cstring
+    splitShare::Cint
 end
 
-function ncclGetUniqueId(uniqueId)
-    @check @runtime_ccall((:ncclGetUniqueId, libnccl), ncclResult_t,
-                          (Ptr{ncclUniqueId},),
-                          uniqueId)
+const ncclConfig_t = ncclConfig_v21700
+
+mutable struct ncclComm end
+
+const ncclComm_t = Ptr{ncclComm}
+
+struct ncclUniqueId
+    internal::NTuple{128, Cchar}
 end
 
-function pncclGetUniqueId(uniqueId)
-    @check @runtime_ccall((:pncclGetUniqueId, libnccl), ncclResult_t,
-                          (Ptr{ncclUniqueId},),
-                          uniqueId)
+@cenum ncclResult_t::UInt32 begin
+    ncclSuccess = 0
+    ncclUnhandledCudaError = 1
+    ncclSystemError = 2
+    ncclInternalError = 3
+    ncclInvalidArgument = 4
+    ncclInvalidUsage = 5
+    ncclRemoteError = 6
+    ncclInProgress = 7
+    ncclNumResults = 8
 end
 
-function ncclCommInitRank(comm, nranks, commId, rank)
-    @check @runtime_ccall((:ncclCommInitRank, libnccl), ncclResult_t,
-                          (Ptr{ncclComm_t}, Cint, ncclUniqueId, Cint),
-                          comm, nranks, commId, rank)
-end
+@checked function ncclMemAlloc(ptr, size)
+        @ccall libnccl.ncclMemAlloc(ptr::Ptr{Ptr{Cvoid}}, size::Cint)::ncclResult_t
+    end
 
-function pncclCommInitRank(comm, nranks, commId, rank)
-    @check @runtime_ccall((:pncclCommInitRank, libnccl), ncclResult_t,
-                          (Ptr{ncclComm_t}, Cint, ncclUniqueId, Cint),
-                          comm, nranks, commId, rank)
-end
+@checked function pncclMemAlloc(ptr, size)
+        @ccall libnccl.pncclMemAlloc(ptr::Ptr{Ptr{Cvoid}}, size::Cint)::ncclResult_t
+    end
 
-function ncclCommInitAll(comm, ndev, devlist)
-    @check @runtime_ccall((:ncclCommInitAll, libnccl), ncclResult_t,
-                          (Ptr{ncclComm_t}, Cint, Ptr{Cint}),
-                          comm, ndev, devlist)
-end
+@checked function ncclMemFree(ptr)
+        @ccall libnccl.ncclMemFree(ptr::Ptr{Cvoid})::ncclResult_t
+    end
 
-function pncclCommInitAll(comm, ndev, devlist)
-    @check @runtime_ccall((:pncclCommInitAll, libnccl), ncclResult_t,
-                          (Ptr{ncclComm_t}, Cint, Ptr{Cint}),
-                          comm, ndev, devlist)
-end
+@checked function pncclMemFree(ptr)
+        @ccall libnccl.pncclMemFree(ptr::Ptr{Cvoid})::ncclResult_t
+    end
 
-function ncclCommDestroy(comm)
-    @check @runtime_ccall((:ncclCommDestroy, libnccl), ncclResult_t,
-                          (ncclComm_t,),
-                          comm)
-end
+@checked function ncclGetVersion(version)
+        @ccall libnccl.ncclGetVersion(version::Ptr{Cint})::ncclResult_t
+    end
 
-function pncclCommDestroy(comm)
-    @check @runtime_ccall((:pncclCommDestroy, libnccl), ncclResult_t,
-                          (ncclComm_t,),
-                          comm)
-end
+@checked function pncclGetVersion(version)
+        @ccall libnccl.pncclGetVersion(version::Ptr{Cint})::ncclResult_t
+    end
 
-function ncclCommAbort(comm)
-    @check @runtime_ccall((:ncclCommAbort, libnccl), ncclResult_t,
-                          (ncclComm_t,),
-                          comm)
-end
+@checked function ncclGetUniqueId(uniqueId)
+        @ccall libnccl.ncclGetUniqueId(uniqueId::Ptr{ncclUniqueId})::ncclResult_t
+    end
 
-function pncclCommAbort(comm)
-    @check @runtime_ccall((:pncclCommAbort, libnccl), ncclResult_t,
-                          (ncclComm_t,),
-                          comm)
-end
+@checked function pncclGetUniqueId(uniqueId)
+        @ccall libnccl.pncclGetUniqueId(uniqueId::Ptr{ncclUniqueId})::ncclResult_t
+    end
+
+@checked function ncclCommInitRankConfig(comm, nranks, commId, rank, config)
+        @ccall libnccl.ncclCommInitRankConfig(comm::Ptr{ncclComm_t}, nranks::Cint, commId::ncclUniqueId, rank::Cint, config::Ptr{ncclConfig_t})::ncclResult_t
+    end
+
+@checked function pncclCommInitRankConfig(comm, nranks, commId, rank, config)
+        @ccall libnccl.pncclCommInitRankConfig(comm::Ptr{ncclComm_t}, nranks::Cint, commId::ncclUniqueId, rank::Cint, config::Ptr{ncclConfig_t})::ncclResult_t
+    end
+
+@checked function ncclCommInitRank(comm, nranks, commId, rank)
+        @ccall libnccl.ncclCommInitRank(comm::Ptr{ncclComm_t}, nranks::Cint, commId::ncclUniqueId, rank::Cint)::ncclResult_t
+    end
+
+@checked function pncclCommInitRank(comm, nranks, commId, rank)
+        @ccall libnccl.pncclCommInitRank(comm::Ptr{ncclComm_t}, nranks::Cint, commId::ncclUniqueId, rank::Cint)::ncclResult_t
+    end
+
+@checked function ncclCommInitAll(comm, ndev, devlist)
+        @ccall libnccl.ncclCommInitAll(comm::Ptr{ncclComm_t}, ndev::Cint, devlist::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function pncclCommInitAll(comm, ndev, devlist)
+        @ccall libnccl.pncclCommInitAll(comm::Ptr{ncclComm_t}, ndev::Cint, devlist::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function ncclCommFinalize(comm)
+        @ccall libnccl.ncclCommFinalize(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function pncclCommFinalize(comm)
+        @ccall libnccl.pncclCommFinalize(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function ncclCommDestroy(comm)
+        @ccall libnccl.ncclCommDestroy(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function pncclCommDestroy(comm)
+        @ccall libnccl.pncclCommDestroy(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function ncclCommAbort(comm)
+        @ccall libnccl.ncclCommAbort(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function pncclCommAbort(comm)
+        @ccall libnccl.pncclCommAbort(comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function ncclCommSplit(comm, color, key, newcomm, config)
+        @ccall libnccl.ncclCommSplit(comm::ncclComm_t, color::Cint, key::Cint, newcomm::Ptr{ncclComm_t}, config::Ptr{ncclConfig_t})::ncclResult_t
+    end
+
+@checked function pncclCommSplit(comm, color, key, newcomm, config)
+        @ccall libnccl.pncclCommSplit(comm::ncclComm_t, color::Cint, key::Cint, newcomm::Ptr{ncclComm_t}, config::Ptr{ncclConfig_t})::ncclResult_t
+    end
 
 function ncclGetErrorString(result)
-    @runtime_ccall((:ncclGetErrorString, libnccl), Cstring,
-                   (ncclResult_t,),
-                   result)
+    @ccall libnccl.ncclGetErrorString(result::ncclResult_t)::Cstring
 end
 
 function pncclGetErrorString(result)
-    @runtime_ccall((:pncclGetErrorString, libnccl), Cstring,
-                   (ncclResult_t,),
-                   result)
+    @ccall libnccl.pncclGetErrorString(result::ncclResult_t)::Cstring
 end
 
-function ncclCommGetAsyncError(comm, asyncError)
-    @check @runtime_ccall((:ncclCommGetAsyncError, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{ncclResult_t}),
-                          comm, asyncError)
+function ncclGetLastError(comm)
+    @ccall libnccl.ncclGetLastError(comm::ncclComm_t)::Cstring
 end
 
-function pncclCommGetAsyncError(comm, asyncError)
-    @check @runtime_ccall((:pncclCommGetAsyncError, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{ncclResult_t}),
-                          comm, asyncError)
+function pncclGetLastError(comm)
+    @ccall libnccl.pncclGetLastError(comm::ncclComm_t)::Cstring
 end
 
-function ncclCommCount(comm, count)
-    @check @runtime_ccall((:ncclCommCount, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, count)
+@checked function ncclCommGetAsyncError(comm, asyncError)
+        @ccall libnccl.ncclCommGetAsyncError(comm::ncclComm_t, asyncError::Ptr{ncclResult_t})::ncclResult_t
+    end
+
+@checked function pncclCommGetAsyncError(comm, asyncError)
+        @ccall libnccl.pncclCommGetAsyncError(comm::ncclComm_t, asyncError::Ptr{ncclResult_t})::ncclResult_t
+    end
+
+@checked function ncclCommCount(comm, count)
+        @ccall libnccl.ncclCommCount(comm::ncclComm_t, count::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function pncclCommCount(comm, count)
+        @ccall libnccl.pncclCommCount(comm::ncclComm_t, count::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function ncclCommCuDevice(comm, device)
+        @ccall libnccl.ncclCommCuDevice(comm::ncclComm_t, device::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function pncclCommCuDevice(comm, device)
+        @ccall libnccl.pncclCommCuDevice(comm::ncclComm_t, device::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function ncclCommUserRank(comm, rank)
+        @ccall libnccl.ncclCommUserRank(comm::ncclComm_t, rank::Ptr{Cint})::ncclResult_t
+    end
+
+@checked function pncclCommUserRank(comm, rank)
+        @ccall libnccl.pncclCommUserRank(comm::ncclComm_t, rank::Ptr{Cint})::ncclResult_t
+    end
+
+@cenum ncclRedOp_dummy_t::UInt32 begin
+    ncclNumOps_dummy = 5
 end
 
-function pncclCommCount(comm, count)
-    @check @runtime_ccall((:pncclCommCount, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, count)
+@cenum ncclRedOp_t::UInt32 begin
+    ncclSum = 0
+    ncclProd = 1
+    ncclMax = 2
+    ncclMin = 3
+    ncclAvg = 4
+    ncclNumOps = 5
+    ncclMaxRedOp = 2147483647
 end
 
-function ncclCommCuDevice(comm, device)
-    @check @runtime_ccall((:ncclCommCuDevice, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, device)
+@cenum ncclDataType_t::UInt32 begin
+    ncclInt8 = 0
+    ncclChar = 0
+    ncclUint8 = 1
+    ncclInt32 = 2
+    ncclInt = 2
+    ncclUint32 = 3
+    ncclInt64 = 4
+    ncclUint64 = 5
+    ncclFloat16 = 6
+    ncclHalf = 6
+    ncclFloat32 = 7
+    ncclFloat = 7
+    ncclFloat64 = 8
+    ncclDouble = 8
+    ncclNumTypes = 9
 end
 
-function pncclCommCuDevice(comm, device)
-    @check @runtime_ccall((:pncclCommCuDevice, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, device)
+@cenum ncclScalarResidence_t::UInt32 begin
+    ncclScalarDevice = 0
+    ncclScalarHostImmediate = 1
 end
 
-function ncclCommUserRank(comm, rank)
-    @check @runtime_ccall((:ncclCommUserRank, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, rank)
+@checked function ncclRedOpCreatePreMulSum(op, scalar, datatype, residence, comm)
+        @ccall libnccl.ncclRedOpCreatePreMulSum(op::Ptr{ncclRedOp_t}, scalar::Ptr{Cvoid}, datatype::ncclDataType_t, residence::ncclScalarResidence_t, comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function pncclRedOpCreatePreMulSum(op, scalar, datatype, residence, comm)
+        @ccall libnccl.pncclRedOpCreatePreMulSum(op::Ptr{ncclRedOp_t}, scalar::Ptr{Cvoid}, datatype::ncclDataType_t, residence::ncclScalarResidence_t, comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function ncclRedOpDestroy(op, comm)
+        @ccall libnccl.ncclRedOpDestroy(op::ncclRedOp_t, comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function pncclRedOpDestroy(op, comm)
+        @ccall libnccl.pncclRedOpDestroy(op::ncclRedOp_t, comm::ncclComm_t)::ncclResult_t
+    end
+
+@checked function ncclReduce(sendbuff, recvbuff, count, datatype, op, root, comm, stream)
+        @ccall libnccl.ncclReduce(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclReduce(sendbuff, recvbuff, count, datatype, op, root, comm, stream)
+        @ccall libnccl.pncclReduce(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclBcast(buff, count, datatype, root, comm, stream)
+        @ccall libnccl.ncclBcast(buff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclBcast(buff, count, datatype, root, comm, stream)
+        @ccall libnccl.pncclBcast(buff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream)
+        @ccall libnccl.ncclBroadcast(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream)
+        @ccall libnccl.pncclBroadcast(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, root::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream)
+        @ccall libnccl.ncclAllReduce(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream)
+        @ccall libnccl.pncclAllReduce(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
+        @ccall libnccl.ncclReduceScatter(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, recvcount::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
+        @ccall libnccl.pncclReduceScatter(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, recvcount::Cint, datatype::ncclDataType_t, op::ncclRedOp_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream)
+        @ccall libnccl.ncclAllGather(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, sendcount::Cint, datatype::ncclDataType_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream)
+        @ccall libnccl.pncclAllGather(sendbuff::Ptr{Cvoid}, recvbuff::Ptr{Cvoid}, sendcount::Cint, datatype::ncclDataType_t, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclSend(sendbuff, count, datatype, peer, comm, stream)
+        @ccall libnccl.ncclSend(sendbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, peer::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclSend(sendbuff, count, datatype, peer, comm, stream)
+        @ccall libnccl.pncclSend(sendbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, peer::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function pncclRecv(recvbuff, count, datatype, peer, comm, stream)
+        @ccall libnccl.pncclRecv(recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, peer::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+@checked function ncclRecv(recvbuff, count, datatype, peer, comm, stream)
+        @ccall libnccl.ncclRecv(recvbuff::Ptr{Cvoid}, count::Cint, datatype::ncclDataType_t, peer::Cint, comm::ncclComm_t, stream::Cint)::ncclResult_t
+    end
+
+# no prototype is found for this function at nccl.h:416:15, please use with caution
+@checked function ncclGroupStart()
+        @ccall libnccl.ncclGroupStart()::ncclResult_t
+    end
+
+# no prototype is found for this function at nccl.h:417:14, please use with caution
+@checked function pncclGroupStart()
+        @ccall libnccl.pncclGroupStart()::ncclResult_t
+    end
+
+# no prototype is found for this function at nccl.h:426:15, please use with caution
+@checked function ncclGroupEnd()
+        @ccall libnccl.ncclGroupEnd()::ncclResult_t
+    end
+
+# no prototype is found for this function at nccl.h:427:14, please use with caution
+@checked function pncclGroupEnd()
+        @ccall libnccl.pncclGroupEnd()::ncclResult_t
+    end
+
+@checked function ncclCommRegister(comm, buff, size, handle)
+        @ccall libnccl.ncclCommRegister(comm::ncclComm_t, buff::Ptr{Cvoid}, size::Cint, handle::Ptr{Ptr{Cvoid}})::ncclResult_t
+    end
+
+@checked function pncclCommRegister(comm, buff, size, handle)
+        @ccall libnccl.pncclCommRegister(comm::ncclComm_t, buff::Ptr{Cvoid}, size::Cint, handle::Ptr{Ptr{Cvoid}})::ncclResult_t
+    end
+
+@checked function ncclCommDeregister(comm, handle)
+        @ccall libnccl.ncclCommDeregister(comm::ncclComm_t, handle::Ptr{Cvoid})::ncclResult_t
+    end
+
+@checked function pncclCommDeregister(comm, handle)
+        @ccall libnccl.pncclCommDeregister(comm::ncclComm_t, handle::Ptr{Cvoid})::ncclResult_t
+    end
+
+const NCCL_MAJOR = 2
+
+const NCCL_MINOR = 19
+
+const NCCL_PATCH = 4
+
+const NCCL_SUFFIX = ""
+
+const NCCL_VERSION_CODE = 21904
+
+const NCCL_COMM_NULL = NULL
+
+const NCCL_UNIQUE_ID_BYTES = 128
+
+const NCCL_CONFIG_UNDEF_INT = INT_MIN
+
+const NCCL_CONFIG_UNDEF_PTR = NULL
+
+const NCCL_SPLIT_NOCOLOR = -1
+
+# Skipping MacroDefinition: NCCL_CONFIG_INITIALIZER { sizeof ( ncclConfig_t ) , /* size */ 0xcafebeef , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_CONFIG_UNDEF_INT , /* blocking */ NCCL_CONFIG_UNDEF_INT , /* cgaClusterSize */ NCCL_CONFIG_UNDEF_INT , /* minCTAs */ NCCL_CONFIG_UNDEF_INT , /* maxCTAs */ NCCL_CONFIG_UNDEF_PTR , /* netName */ NCCL_CONFIG_UNDEF_INT /* splitShare */ \
+#}
+
+
+export NCCLError
+
+struct NCCLError <: Exception
+    code::ncclResult_t
+    msg::AbstractString
+end
+Base.show(io::IO, err::NCCLError) = print(io, "NCCLError(code $(err.code), $(err.msg))")
+
+function NCCLError(code::ncclResult_t)
+    msg = status_message(code)
+    return NCCLError(code, msg)
 end
 
-function pncclCommUserRank(comm, rank)
-    @check @runtime_ccall((:pncclCommUserRank, libnccl), ncclResult_t,
-                          (ncclComm_t, Ptr{Cint}),
-                          comm, rank)
+function status_message(status)
+    if status == ncclSuccess
+        return "function succeeded"
+    elseif status == ncclUnhandledCudaError
+        return "a call to a CUDA function failed"
+    elseif status == ncclSystemError
+        return "a call to the system failed"
+    elseif status == ncclInternalError
+        return "an internal check failed. This is either a bug in NCCL or due to memory corruption"
+    elseif status == ncclInvalidArgument
+        return "one argument has an invalid value"
+    elseif status == ncclInvalidUsage
+        return "the call to NCCL is incorrect. This is usually reflecting a programming error"
+    elseif status == ncclRemoteError
+        return "A call failed possibly due to a network error or a remote process exiting prematurely."
+    elseif status == ncclInProgress
+        return "A NCCL operation on the communicator is being enqueued and is being progressed in the background."
+    else
+        return "unknown status"
+    end
 end
 
-function ncclReduce(sendbuff, recvbuff, count, datatype, op, root, comm, stream)
-    @check @runtime_ccall((:ncclReduce, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, Cint, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, op, root, comm, stream)
+
+# exports
+const PREFIXES = ["nccl"]
+for name in names(@__MODULE__; all=true), prefix in PREFIXES
+    if startswith(string(name), prefix)
+        @eval export $name
+    end
 end
 
-function pncclReduce(sendbuff, recvbuff, count, datatype, op, root, comm, stream)
-    @check @runtime_ccall((:pncclReduce, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, Cint, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, op, root, comm, stream)
-end
-
-function ncclBcast(buff, count, datatype, root, comm, stream)
-    @check @runtime_ccall((:ncclBcast, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, Csize_t, ncclDataType_t, Cint, ncclComm_t,
-                           CUstream),
-                          buff, count, datatype, root, comm, stream)
-end
-
-function pncclBcast(buff, count, datatype, root, comm, stream)
-    @check @runtime_ccall((:pncclBcast, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, Csize_t, ncclDataType_t, Cint, ncclComm_t,
-                           CUstream),
-                          buff, count, datatype, root, comm, stream)
-end
-
-function ncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream)
-    @check @runtime_ccall((:ncclBroadcast, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t, Cint,
-                           ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, root, comm, stream)
-end
-
-function pncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream)
-    @check @runtime_ccall((:pncclBroadcast, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t, Cint,
-                           ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, root, comm, stream)
-end
-
-function ncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream)
-    @check @runtime_ccall((:ncclAllReduce, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, op, comm, stream)
-end
-
-function pncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream)
-    @check @runtime_ccall((:pncclAllReduce, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, count, datatype, op, comm, stream)
-end
-
-function ncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
-    @check @runtime_ccall((:ncclReduceScatter, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
-end
-
-function pncclReduceScatter(sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
-    @check @runtime_ccall((:pncclReduceScatter, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclRedOp_t, ncclComm_t, CUstream),
-                          sendbuff, recvbuff, recvcount, datatype, op, comm, stream)
-end
-
-function ncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream)
-    @check @runtime_ccall((:ncclAllGather, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclComm_t, CUstream),
-                          sendbuff, recvbuff, sendcount, datatype, comm, stream)
-end
-
-function pncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream)
-    @check @runtime_ccall((:pncclAllGather, libnccl), ncclResult_t,
-                          (CuPtr{Cvoid}, CuPtr{Cvoid}, Csize_t, ncclDataType_t,
-                           ncclComm_t, CUstream),
-                          sendbuff, recvbuff, sendcount, datatype, comm, stream)
-end
-
-function ncclGroupStart()
-    @check @runtime_ccall((:ncclGroupStart, libnccl), ncclResult_t, ())
-end
-
-function ncclGroupEnd()
-    @check @runtime_ccall((:ncclGroupEnd, libnccl), ncclResult_t, ())
-end
+end # module

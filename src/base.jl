@@ -1,9 +1,18 @@
 function version()
-    ver = Ref{Cint}()
-    ncclGetVersion(ver)
-    major, ver = divrem(ver[], 1000)
-    minor, patch = divrem(ver, 100)
+    ver_r = Ref{Cint}()
+    ncclGetVersion(ver_r)
+    ver = ver_r[]
 
+    # nccl.h defines this as:
+    #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
+
+    if ver < 2900
+        major, ver = divrem(ver, 1000)
+        minor, patch = divrem(ver, 100)
+    else
+        major, ver = divrem(ver, 10000)
+        minor, patch = divrem(ver, 100)
+    end
     VersionNumber(major, minor, patch)
 end
 

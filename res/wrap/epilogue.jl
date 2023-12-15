@@ -1,3 +1,4 @@
+
 export NCCLError
 
 struct NCCLError <: Exception
@@ -24,18 +25,11 @@ function status_message(status)
         return "one argument has an invalid value"
     elseif status == ncclInvalidUsage
         return "the call to NCCL is incorrect. This is usually reflecting a programming error"
+    elseif status == ncclRemoteError
+        return "A call failed possibly due to a network error or a remote process exiting prematurely."
+    elseif status == ncclInProgress
+        return "A NCCL operation on the communicator is being enqueued and is being progressed in the background."
     else
         return "unknown status"
-    end
-end
-
-macro check(nccl_func)
-    quote
-        local err::ncclResult_t
-        err = $(esc(nccl_func::Expr))
-        if err != ncclSuccess
-            throw(NCCLError(err))
-        end
-        err
     end
 end
