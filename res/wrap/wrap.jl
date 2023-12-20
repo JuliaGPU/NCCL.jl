@@ -1,4 +1,4 @@
-using Clang.Generators, NCCL_jll
+using Clang.Generators, NCCL_jll, JuliaFormatter
 
 cd(@__DIR__)
 
@@ -75,54 +75,18 @@ function rewriter!(ctx, options)
         if Generators.is_function(node) && !Generators.is_variadic_function(node)
             expr = node.exprs[1]
             call_expr = expr.args[2].args[1].args[3]    # assumes `@ccall`
-            #=
-
-            target_expr = call_expr.args[1].args[1]
-            fn = String(target_expr.args[2].value)
-
-            # look up API options for this function
-            fn_options = Dict{String,Any}()
-            if haskey(options, "api")
-                names = [fn]
-
-                # _64 aliases are used by CUBLAS with Int64 arguments. they otherwise have
-                # an idential signature, so we can reuse the same type rewrites.
-                if endswith(fn, "_64")
-                    push!(names, fn[1:end-3])
-                end
-
-                # the exact name is always checked first, so it's always possible to
-                # override the type rewrites for a specific function
-                # (e.g. if a _64 function ever passes a `Ptr{Cint}` index).
-                for name in names
-                    if haskey(options["api"], name)
-                        fn_options = options["api"][name]
-                        break
-                    end
-                end
-            end
-
+      
             # rewrite pointer argument types
             arg_exprs = call_expr.args[1].args[2:end]
-            argtypes = get(fn_options, "argtypes", Dict())
-            for (arg, typ) in argtypes
-                i = parse(Int, arg)
-                arg_exprs[i].args[2] = Meta.parse(typ)
+            for expr in arg_exprs
+                if expr.args[2] == :(Ptr{Cvoid}) && expr.args[1] != :scalar
+                    expr.args[2] = :(CuPtr{Cvoid})
+                end
+                if expr.args[1] == :stream
+                    expr.args[2] = :(CUstream)
+                end
             end
 
-            # insert `initialize_context()` before each function with a `ccall`
-            if get(fn_options, "needs_context", true)
-                pushfirst!(expr.args[2].args, :(initialize_context()))
-            end
-
-            # insert `@checked` before each function with a `ccall` returning a checked type`
-            
-            checked_types = if haskey(options, "api")
-                get(options["api"], "checked_rettypes", Dict())
-            else
-                String[]
-            end
-            =#
             rettyp = call_expr.args[2]
             if rettyp isa Symbol && String(rettyp) == "ncclResult_t"
                 node.exprs[1] = Expr(:macrocall, Symbol("@checked"), nothing, expr)
@@ -138,3 +102,4 @@ rewriter!(ctx, options)
 
 build!(ctx, BUILDSTAGE_PRINTING_ONLY)
 
+format_file(options["general"]["output_file_path"], YASStyle())
