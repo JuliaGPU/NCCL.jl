@@ -1,8 +1,14 @@
 import NCCL_jll: is_available
 
+"""
+    NCCL.is_available() :: Bool
+
+Is the NCCL library available?
+"""
+is_available
 
 """
-    NCCL.version()
+    NCCL.version() :: VersionNumber
 
 Get the version of the current NCCL library.
 """
