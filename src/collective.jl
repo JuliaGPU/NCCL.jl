@@ -4,7 +4,7 @@
         stream::CuStream=default_device_stream(comm))
 
 Reduce array `sendbuf` using `op` (one of `+`, `*`, `min`, `max`,
-or `NCCL.avg`), writing the result to `recvbuf` to all ranks.
+or [`NCCL.avg`](@ref)), writing the result to `recvbuf` to all ranks.
 
 # External links
 - [`ncclAllReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclallreduce)
@@ -25,7 +25,7 @@ end
 
 
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
-or `NCCL.avg`), writing the result inplace to all ranks.
+or `[`NCCL.avg`](@ref)`), writing the result inplace to all ranks.
 """
 Allreduce!(sendrecvbuf, op, comm::Communicator; stream::CuStream=default_device_stream(comm) ) =
     Allreduce!(sendrecvbuf, sendrecvbuf, op, comm; stream)
@@ -58,7 +58,7 @@ Broadcast!(sendrecvbuf, comm::Communicator;  root::Integer=0, stream::CuStream=d
         stream::CuStream = default_device_stream(comm))
 
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
-or `NCCL.avg`), writing the result to `recvbuf` on rank `root`.
+or `[`NCCL.avg`](@ref)`), writing the result to `recvbuf` on rank `root`.
 
 # External links
 - [`ncclReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclreduce)

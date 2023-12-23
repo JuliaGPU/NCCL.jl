@@ -37,6 +37,14 @@ ncclRedOp_t(::typeof(*)) = ncclProd
 ncclRedOp_t(::typeof(max)) = ncclMax
 ncclRedOp_t(::typeof(min)) = ncclMin
 
+"""
+    NCCl.avg
+
+Perform an average operation, i.e. a sum across all ranks, divided by the number
+of ranks.
+"""
+const avg = ncclAvg
+
 ncclDataType_t(::Type{Int8}) = ncclInt8
 ncclDataType_t(::Type{UInt8}) = ncclUint8
 ncclDataType_t(::Type{Int32}) = ncclInt32

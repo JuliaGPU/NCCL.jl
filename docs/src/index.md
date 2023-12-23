@@ -42,6 +42,7 @@ Broadcast!
 Reduce!
 Allgather!
 ReduceScatter!
+avg
 ```
 
 ## Point-to-point communication

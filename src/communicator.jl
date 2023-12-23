@@ -66,7 +66,7 @@ function Communicators(devices)
 end
 
 """
-    CUDA.deviceid(comm::Communicator)
+    CUDA.deviceid(comm::Communicator) :: Int
 
 The device identifier of the communicator
 
@@ -124,8 +124,8 @@ end
 
 
 """
-    NCCL.default_device_stream(devid::Integer)
-    NCCL.default_device_stream(comm::Communicator)
+    NCCL.default_device_stream(devid::Integer) :: CuStream
+    NCCL.default_device_stream(comm::Communicator) :: CuStream
 
 Get the default stream for device `devid`, or the device corresponding to
 communicator `comm`.
