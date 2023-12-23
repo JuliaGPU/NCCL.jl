@@ -17,11 +17,12 @@ end
 
 function destroy(comm::Communicator)
     if comm.handle != C_NULL
-        ncclCommDestroy(comm.handle)
+        ncclCommDestroy(comm)
         comm.handle = ncclComm_t(C_NULL)
     end
     return nothing
 end
+Base.unsafe_convert(::Type{LibNCCL.ncclComm_t}, comm::Communicator) = comm.handle
 
 # creates a new communicator (multi thread/process version)
 function Communicator(nranks::Integer, comm_id::UniqueID, rank::Integer)
@@ -74,7 +75,7 @@ The device identifier of the communicator
 """
 function deviceid(comm::Communicator)
     dev_ref = Ref{Cint}(C_NULL)
-    ncclCommCuDevice(comm.handle, dev_ref)
+    ncclCommCuDevice(comm, dev_ref)
     return Int(dev_ref[])
 end
 
@@ -89,7 +90,7 @@ The number of communicators in the clique.
 """
 function size(comm::Communicator)
     size_ref = Ref{Cint}(C_NULL)
-    ncclCommCount(comm.handle, size_ref)
+    ncclCommCount(comm, size_ref)
     return Int(size_ref[])
 end
 
@@ -103,7 +104,7 @@ The 0-based index of the communicator in the clique.
 """
 function rank(comm::Communicator)
     rank_ref = Ref{Cint}(C_NULL)
-    ncclCommUserRank(comm.handle, rank_ref)
+    ncclCommUserRank(comm, rank_ref)
     return Int(rank_ref[])
 end
 
@@ -117,6 +118,26 @@ uncompleted operations before destroying the communicator.
 - [`ncclCommAbort`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommabort)
 """
 function abort(comm::Communicator)
-    ncclCommAbort(comm.handle)
+    ncclCommAbort(comm)
     return
 end
+
+
+"""
+    NCCL.default_device_stream(devid::Integer)
+    NCCL.default_device_stream(comm::Communicator)
+
+Get the default stream for device `devid`, or the device corresponding to
+communicator `comm`.
+"""
+function default_device_stream(devid::Integer)
+    state = CUDA.task_local_state!()
+    devidx = devid+1
+    @inbounds if state.streams[devidx] === nothing
+        state.streams[devidx] = CUDA.device!(CUDA.create_stream, devid)
+    else
+        state.streams[devidx]::CuStream
+    end
+end
+default_device_stream(comm::Communicator) =
+    default_device_stream(CUDA.deviceid(comm))

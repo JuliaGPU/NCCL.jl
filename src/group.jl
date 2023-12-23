@@ -12,4 +12,4 @@ groupStart() = ncclGroupStart()
 
 End a NCCL group call
 """
-groupEnd()   = ncclGroupEnd()
+groupEnd() = ncclGroupEnd()
