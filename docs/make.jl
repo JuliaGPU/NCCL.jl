@@ -1,15 +1,20 @@
 using Documenter
 using NCCL
 
+const ci = get(ENV, "CI", "") == "true"
+
 makedocs(
     sitename = "NCCL",
     format = Documenter.HTML(),
     modules = [NCCL]
 )
 
-# Documenter can also automatically deploy documentation to gh-pages.
-# See "Hosting Documentation" and deploydocs() in the Documenter manual
-# for more information.
-#=deploydocs(
-    repo = "<repository url>"
-)=#
+if ci
+    deploydocs(
+        repo = "github.com/JuliaGPU/NCCL.jl",
+        target = "build",
+        push_preview = true,
+        devbranch = "main",
+        forcepush = true,
+    )
+end
