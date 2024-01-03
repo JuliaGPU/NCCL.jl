@@ -87,7 +87,7 @@ Concatenate `sendbuf` from each rank into `recvbuf` on all ranks.
 function Allgather!(sendbuf, recvbuf, comm::Communicator; stream::CuStream=default_device_stream(comm))
     data_type = ncclDataType_t(eltype(recvbuf))
     sendcount = length(sendbuf)
-    @assert length(recvbuf) == count * size(comm)
+    @assert length(recvbuf) == sendcount * size(comm)
     ncclAllGather(sendbuf, recvbuf, sendcount, data_type, comm, stream)
     return recvbuf
 end
