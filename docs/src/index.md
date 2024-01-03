@@ -19,7 +19,7 @@ version()
 
 ```@docs
 Communicators
-CUDA.deviceid(comm::Communicator)
+CUDA.CuDevice(comm::Communicator)
 size(comm::Communicator)
 rank(comm::Communicator)
 abort(comm::Communicator)
