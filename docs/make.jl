@@ -1,5 +1,5 @@
 using Documenter
-using NCCL
+using NCCL, CUDA
 
 const ci = get(ENV, "CI", "") == "true"
 
