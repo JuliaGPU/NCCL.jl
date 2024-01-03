@@ -15,7 +15,7 @@ using Test
 end
 
 @testset "Allreduce!" begin
-    devs  = Cint[0,1]
+    devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
