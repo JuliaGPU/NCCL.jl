@@ -10,9 +10,3 @@ NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 [compat]
 CEnum = "0.2, 0.3, 0.4, 0.5"
 julia = "1.6"
-
-[targets]
-test = ["Test"]
-
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

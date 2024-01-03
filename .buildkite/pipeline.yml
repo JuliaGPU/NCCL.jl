@@ -13,9 +13,6 @@ steps:
           queue: "juliagpu"
           cuda: "*"
           multigpu: "*"
-        commands: |
-          echo -e "CUDA_Runtime_jll = \"76a88914-d11a-5bdc-97e0-2f5a05c973a2\"" >>Project.toml
-          echo -e "[CUDA_Runtime_jll]\nlocal = \"true\"" >LocalPreferences.toml
         if: build.message !~ /\[skip tests\]/
         timeout_in_minutes: 5
         matrix:
@@ -55,9 +52,9 @@ steps:
               - "11.5"
               - "11.4"
         commands: |
-          echo -e "CUDA_Runtime_jll = \"76a88914-d11a-5bdc-97e0-2f5a05c973a2\"\nCUDA_Driver_jll = \"4ee394cb-3365-5eb0-8335-949819d2adfc\"" >>Project.toml
-          echo -e "[CUDA_Runtime_jll]\nversion = \"{{matrix.cuda}}\"" >LocalPreferences.toml
-          echo -e "[CUDA_Driver_jll]\ncompat = \"false\"" >>LocalPreferences.toml
+          echo -e "[extras]\nCUDA_Runtime_jll = \"76a88914-d11a-5bdc-97e0-2f5a05c973a2\"\nCUDA_Driver_jll = \"4ee394cb-3365-5eb0-8335-949819d2adfc\"" >>test/Project.toml
+          echo -e "[CUDA_Runtime_jll]\nversion = \"{{matrix.cuda}}\"" >test/LocalPreferences.toml
+          echo -e "[CUDA_Driver_jll]\ncompat = \"false\"" >>test/LocalPreferences.toml
 
 env:
   JULIA_PKG_SERVER_REGISTRY_PREFERENCE: "eager" # OK to downloading JLLs from GitHub
