@@ -1,8 +1,6 @@
 # Communicator
 export Communicator
 
-import CUDA: deviceid
-
 const UniqueID = LibNCCL.ncclUniqueId
 
 function UniqueID()
@@ -66,17 +64,17 @@ function Communicators(devices)
 end
 
 """
-    CUDA.deviceid(comm::Communicator) :: Int
+    CuDevice(comm::Communicator) :: CuDevice
 
-The device identifier of the communicator
+The device of the communicator
 
 # External Links
 - [`ncclCommCuDevice`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcudevice)
 """
-function deviceid(comm::Communicator)
+function CUDA.CuDevice(comm::Communicator)
     dev_ref = Ref{Cint}(C_NULL)
     ncclCommCuDevice(comm, dev_ref)
-    return Int(dev_ref[])
+    return CuDevice(dev_ref[])
 end
 
 
@@ -124,20 +122,14 @@ end
 
 
 """
-    NCCL.default_device_stream(devid::Integer) :: CuStream
     NCCL.default_device_stream(comm::Communicator) :: CuStream
 
 Get the default stream for device `devid`, or the device corresponding to
 communicator `comm`.
 """
-function default_device_stream(devid::Integer)
-    state = CUDA.task_local_state!()
-    devidx = devid+1
-    @inbounds if state.streams[devidx] === nothing
-        state.streams[devidx] = CUDA.device!(CUDA.create_stream, devid)
-    else
-        state.streams[devidx]::CuStream
+function default_device_stream(comm::Communicator)
+    dev = CuDevice(comm)
+    device!(dev) do
+        stream()
     end
 end
-default_device_stream(comm::Communicator) =
-    default_device_stream(CUDA.deviceid(comm))

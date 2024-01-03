@@ -12,7 +12,7 @@ using NCCL
     comms = NCCL.Communicators(CUDA.devices())
     for (i,dev) in enumerate(CUDA.devices())
         @test NCCL.rank(comms[i]) == i-1
-        @test NCCL.deviceid(comms[i]) == i-1
+        @test CuDevice(comms[i]) == dev
         @test NCCL.size(comms[i]) == length(CUDA.devices())
     end
     id  = NCCL.UniqueID()
