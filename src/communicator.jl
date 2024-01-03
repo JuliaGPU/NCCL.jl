@@ -1,72 +1,135 @@
 # Communicator
+export Communicator
 
-export UniqueID, Communicator, rank
+const UniqueID = LibNCCL.ncclUniqueId
 
-import CUDAdrv: device
-
-const NCCL_UNIQUE_ID_BYTES = 128
-const ncclUniqueId_t = NTuple{NCCL_UNIQUE_ID_BYTES, Cchar}
-
-struct UniqueID
-    internal::ncclUniqueId_t
-
-    function UniqueID()
-        buf = zeros(Cchar, NCCL_UNIQUE_ID_BYTES)
-        ncclGetUniqueId(buf)
-        new(Tuple(buf))
-    end
+function UniqueID()
+    r = Ref{UniqueID}()
+    ncclGetUniqueId(r)
+    return r[]
 end
 
-Base.convert(::Type{ncclUniqueId_t}, id::UniqueID) = id.internal
-
-
-const ncclComm_t = Ptr{Cvoid}
-
-struct Communicator
+mutable struct Communicator
     handle::ncclComm_t
 end
 
+function destroy(comm::Communicator)
+    if comm.handle != C_NULL
+        ncclCommDestroy(comm)
+        comm.handle = ncclComm_t(C_NULL)
+    end
+    return nothing
+end
+Base.unsafe_convert(::Type{LibNCCL.ncclComm_t}, comm::Communicator) = comm.handle
 
 # creates a new communicator (multi thread/process version)
-function Communicator(nranks, comm_id, rank)
+function Communicator(nranks::Integer, comm_id::UniqueID, rank::Integer)
     handle_ref = Ref{ncclComm_t}(C_NULL)
-    ncclCommInitRank(handle_ref, nranks, comm_id.internal, rank)
+    ncclCommInitRank(handle_ref, nranks, comm_id, rank)
     c = Communicator(handle_ref[])
-    finalizer(c) do x
-        ncclCommDestroy(x.handle)
-    end
-    return c
+    return finalizer(destroy, c)
 end
 
 # creates a clique of communicators (single process version)
-function Communicator(devices::Union{CUDAdrv.DeviceSet,AbstractVector})
-    ndev    = length(devices)
+"""
+    NCCL.Communicators(devices) :: Vector{Communicator}
+
+Construct and initialize a clique of NCCL Communicators.
+
+`devices` can either be a collection of identifiers, or `CuDevice`s.
+
+# Examples
+```
+# initialize a clique over all devices on the host
+comms = NCCL.Communicators(CUDA.devices())
+```
+
+# External links
+- [`ncclCommInitAll`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcomminitall)
+"""
+function Communicators(deviceids::Vector{Cint})
+    ndev    = length(deviceids)
     comms   = Vector{ncclComm_t}(undef, ndev)
-    devlist = Cint.([i-1 for i in 1:ndev])
-    ncclCommInitAll(comms, ndev, devlist)
-    cs = Communicator.(comms)
-    finalizer(cs) do xs
-        for x in xs
-            ncclCommDestroy(x.handle)
-        end
+    ncclCommInitAll(comms, ndev, deviceids)
+    return map(comms) do ch
+        c = Communicator(ch)
+        finalizer(destroy, c)
     end
-    return cs
+end
+function Communicators(deviceids::AbstractVector{<:Integer})
+    Communicators(Cint[d for d in deviceids])
+end
+function Communicators(devices)
+    Communicators(Cint[deviceid(d) for d in devices])
 end
 
-function device(comm::Communicator)
+"""
+    CuDevice(comm::Communicator) :: CuDevice
+
+The device of the communicator
+
+# External Links
+- [`ncclCommCuDevice`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcudevice)
+"""
+function CUDA.CuDevice(comm::Communicator)
     dev_ref = Ref{Cint}(C_NULL)
-    ncclCommCuDevice(comm.handle, dev_ref)
-    return dev_ref[]
+    ncclCommCuDevice(comm, dev_ref)
+    return CuDevice(dev_ref[])
 end
 
-function Base.size(comm::Communicator)
+
+"""
+    NCCL.size(comm::Communicator) :: Int
+
+The number of communicators in the clique.
+
+# External links
+- [`ncclCommCount`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcount)
+"""
+function size(comm::Communicator)
     size_ref = Ref{Cint}(C_NULL)
-    ncclCommCount(comm.handle, size_ref)
-    return size_ref[]
+    ncclCommCount(comm, size_ref)
+    return Int(size_ref[])
 end
 
+"""
+    NCCL.rank(comm::Communicator) :: Int
+
+The 0-based index of the communicator in the clique.
+
+# External links
+- [`ncclCommUserRank`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommuserrank)
+"""
 function rank(comm::Communicator)
     rank_ref = Ref{Cint}(C_NULL)
-    ncclCommUserRank(comm.handle, rank_ref)
-    return rank_ref[]
+    ncclCommUserRank(comm, rank_ref)
+    return Int(rank_ref[])
+end
+
+"""
+    NCCL.abort(comm::Communicator)
+
+Frees resources that are allocated to `comm`. Will abort any
+uncompleted operations before destroying the communicator.
+
+# External links
+- [`ncclCommAbort`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommabort)
+"""
+function abort(comm::Communicator)
+    ncclCommAbort(comm)
+    return
+end
+
+
+"""
+    NCCL.default_device_stream(comm::Communicator) :: CuStream
+
+Get the default stream for device `devid`, or the device corresponding to
+communicator `comm`.
+"""
+function default_device_stream(comm::Communicator)
+    dev = CuDevice(comm)
+    device!(dev) do
+        stream()
+    end
 end

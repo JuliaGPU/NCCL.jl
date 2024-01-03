@@ -1,0 +1,60 @@
+steps:
+  # first, test supported Julia versions (using local CUDA as installed on the system)
+  - group: ":julia: Julia"
+    key: "julia"
+    steps:
+      - label: "Julia {{matrix.julia}}"
+        plugins:
+          - JuliaCI/julia#v1:
+              version: "{{matrix.julia}}"
+          - JuliaCI/julia-test#v1: ~
+          - JuliaCI/julia-coverage#v1: ~
+        agents:
+          queue: "juliagpu"
+          cuda: "*"
+          multigpu: "*"
+        if: build.message !~ /\[skip tests\]/
+        timeout_in_minutes: 5
+        matrix:
+          setup:
+            julia:
+              - "1.8"
+              - "1.9"
+              - "1.10"
+
+  # then, test supported CUDA toolkits (installed through the artifact system)
+  - group: "CUDA"
+    key: "cuda"
+    depends_on: "julia"
+    steps:
+      - label: "CUDA {{matrix.cuda}}"
+        plugins:
+          - JuliaCI/julia#v1:
+              version: 1.9
+          - JuliaCI/julia-test#v1: ~
+          - JuliaCI/julia-coverage#v1: ~
+        agents:
+          queue: "juliagpu"
+          cuda: "*"
+          multigpu: "*"
+        if: build.message !~ /\[skip tests\]/ && !build.pull_request.draft
+        timeout_in_minutes: 5
+        matrix:
+          setup:
+            cuda:
+              - "12.3"
+              - "12.2"
+              - "12.1"
+              - "12.0"
+              - "11.8"
+              - "11.7"
+              - "11.6"
+              - "11.5"
+              - "11.4"
+        commands: |
+          echo -e "[extras]\nCUDA_Runtime_jll = \"76a88914-d11a-5bdc-97e0-2f5a05c973a2\"\nCUDA_Driver_jll = \"4ee394cb-3365-5eb0-8335-949819d2adfc\"" >>test/Project.toml
+          echo -e "[CUDA_Runtime_jll]\nversion = \"{{matrix.cuda}}\"" >test/LocalPreferences.toml
+          echo -e "[CUDA_Driver_jll]\ncompat = \"false\"" >>test/LocalPreferences.toml
+
+env:
+  JULIA_PKG_SERVER_REGISTRY_PREFERENCE: "eager" # OK to downloading JLLs from GitHub

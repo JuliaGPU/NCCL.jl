@@ -1,0 +1,4 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+NCCL = "3fe64909-d7a1-4096-9b7d-7a0f12cf0f6b"

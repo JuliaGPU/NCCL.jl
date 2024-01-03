@@ -1,32 +1,56 @@
-function version()
-    ver = Ref{Cint}()
-    ncclGetVersion(ver)
-    major, ver = divrem(ver[], 1000)
-    minor, patch = divrem(ver, 100)
+import NCCL_jll: is_available
 
+"""
+    NCCL.is_available() :: Bool
+
+Is the NCCL library available?
+"""
+is_available
+
+"""
+    NCCL.version() :: VersionNumber
+
+Get the version of the current NCCL library.
+"""
+function version()
+    ver_r = Ref{Cint}()
+    ncclGetVersion(ver_r)
+    ver = ver_r[]
+
+    # nccl.h defines this as:
+    #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
+
+    if ver < 2900
+        major, ver = divrem(ver, 1000)
+        minor, patch = divrem(ver, 100)
+    else
+        major, ver = divrem(ver, 10000)
+        minor, patch = divrem(ver, 100)
+    end
     VersionNumber(major, minor, patch)
 end
 
-function ncclDataType(T::DataType)
-    if T == Float32
-        return ncclFloat32
-    elseif T == Float16
-        return ncclFloat16
-    elseif T == Float64
-        return ncclFloat64
-    elseif T == Int8
-        return ncclInt8
-    elseif T == Char
-        return ncclInt8
-    elseif T == Int32
-        return ncclInt32
-    elseif T == UInt32
-        return ncclUint32
-    elseif T == Int64
-        return ncclInt64
-    elseif T == UInt64
-        return ncclUint64
-    else
-        throw(ArgumentError("ncclDataType equivalent for input type $T does not exist!"))
-    end
-end
+import .LibNCCL: ncclRedOp_t, ncclDataType_t
+
+ncclRedOp_t(::typeof(+)) = ncclSum
+ncclRedOp_t(::typeof(*)) = ncclProd
+ncclRedOp_t(::typeof(max)) = ncclMax
+ncclRedOp_t(::typeof(min)) = ncclMin
+
+"""
+    NCCl.avg
+
+Perform an average operation, i.e. a sum across all ranks, divided by the number
+of ranks.
+"""
+const avg = ncclAvg
+
+ncclDataType_t(::Type{Int8}) = ncclInt8
+ncclDataType_t(::Type{UInt8}) = ncclUint8
+ncclDataType_t(::Type{Int32}) = ncclInt32
+ncclDataType_t(::Type{UInt32}) = ncclUint32
+ncclDataType_t(::Type{Int64}) = ncclInt64
+ncclDataType_t(::Type{UInt64}) = ncclUint64
+ncclDataType_t(::Type{Float16}) = ncclFloat16
+ncclDataType_t(::Type{Float32}) = ncclFloat32
+ncclDataType_t(::Type{Float64}) = ncclFloat64

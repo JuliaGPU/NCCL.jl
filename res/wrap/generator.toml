@@ -1,0 +1,13 @@
+[general]
+library_name = "libnccl"
+output_file_path = "../../src/libnccl.jl"
+module_name = "LibNCCL"
+jll_pkg_name = "NCCL_jll"
+export_symbol_prefixes = ["nccl"]
+prologue_file_path = "./prologue.jl"
+epilogue_file_path = "./epilogue.jl"
+
+[codegen]
+use_ccall_macro = true
+always_NUL_terminated_string = true
+
