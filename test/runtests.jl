@@ -1,5 +1,12 @@
-using NCCL, CUDA
 using Test
+
+using CUDA
+@info "CUDA information:\n" * sprint(io->CUDA.versioninfo(io))
+
+using NCCL
+@info "NCCL version: $(NCCL.version())"
+
+@testset "NCCL" begin
 
 @testset "Communicator" begin
     comms = NCCL.Communicators(CUDA.devices())
@@ -159,5 +166,6 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+end
 
 end
