@@ -14,7 +14,7 @@ if ci
         repo = "github.com/JuliaGPU/NCCL.jl",
         target = "build",
         push_preview = true,
-        devbranch = "main",
+        devbranch = "master",
         forcepush = true,
     )
 end
