@@ -64,14 +64,14 @@ function Communicators(devices)
 end
 
 """
-    CuDevice(comm::Communicator) :: CuDevice
+    NCCL.device(comm::Communicator) :: CuDevice
 
 The device of the communicator
 
 # External Links
 - [`ncclCommCuDevice`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcudevice)
 """
-function CUDA.CuDevice(comm::Communicator)
+function device(comm::Communicator)
     dev_ref = Ref{Cint}(C_NULL)
     ncclCommCuDevice(comm, dev_ref)
     return CuDevice(dev_ref[])
@@ -128,7 +128,7 @@ Get the default stream for device `devid`, or the device corresponding to
 communicator `comm`.
 """
 function default_device_stream(comm::Communicator)
-    dev = CuDevice(comm)
+    dev = device(comm)
     device!(dev) do
         stream()
     end
