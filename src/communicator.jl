@@ -22,25 +22,42 @@ function destroy(comm::Communicator)
 end
 Base.unsafe_convert(::Type{LibNCCL.ncclComm_t}, comm::Communicator) = comm.handle
 
-# creates a new communicator (multi thread/process version)
-function Communicator(nranks::Integer, comm_id::UniqueID, rank::Integer)
+"""
+    NCCL.Communicator(nranks, rank; [unique_id]) :: Communicator
+
+Create a single communicator for use in a multi-threaded or multi-process
+environment. `nranks` is the number of ranks in the communicator, and `rank`
+is the 0-based index of the current rank. `unique_id` is an optional unique
+identifier for the communicator.
+
+# Examples
+```
+comm = Communicator(length(CUDA.devices()), id, myid())
+# this blocks until all other ranks have connected
+```
+
+# External links
+- [`ncclCommInitRank`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclCommInitRank)
+"""
+function Communicator(nranks::Integer, rank::Integer;
+                      unique_id::UniqueID=UniqueID())
+    0 <= rank < nranks || throw(ArgumentError("rank must be in [0, nranks)"))
     handle_ref = Ref{ncclComm_t}(C_NULL)
-    ncclCommInitRank(handle_ref, nranks, comm_id, rank)
+    ncclCommInitRank(handle_ref, nranks, unique_id, rank)
     c = Communicator(handle_ref[])
     return finalizer(destroy, c)
 end
 
-# creates a clique of communicators (single process version)
 """
     NCCL.Communicators(devices) :: Vector{Communicator}
 
-Construct and initialize a clique of NCCL Communicators.
+Construct and initialize a clique of NCCL Communicators over the devices
+on a single host.
 
 `devices` can either be a collection of identifiers, or `CuDevice`s.
 
 # Examples
 ```
-# initialize a clique over all devices on the host
 comms = NCCL.Communicators(CUDA.devices())
 ```
 

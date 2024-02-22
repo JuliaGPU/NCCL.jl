@@ -9,16 +9,17 @@ using NCCL
 @testset "NCCL" begin
 
 @testset "Communicator" begin
+    # clique of communicators
     comms = NCCL.Communicators(CUDA.devices())
     for (i,dev) in enumerate(CUDA.devices())
         @test NCCL.rank(comms[i]) == i-1
         @test NCCL.device(comms[i]) == dev
         @test NCCL.size(comms[i]) == length(CUDA.devices())
     end
-    id  = NCCL.UniqueID()
-    #=num_devs = length(CUDA.devices())
-    comm  = Communicator(num_devs, id, 0)
-    @test device(comm) == 0=#
+
+    # single communicator (with nranks=1 or this would block)
+    comm  = Communicator(1, 0)
+    @test NCCL.device(comm) == CuDevice(0)
 end
 
 @testset "Allreduce!" begin
