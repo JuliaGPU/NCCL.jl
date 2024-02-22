@@ -1,6 +1,6 @@
 # NCCL.jl
 
- A Julia wrapper for the [NVIDIA Collective Communications Library (NCCL)](https://developer.nvidia.com/nccl). 
+ A Julia wrapper for the [NVIDIA Collective Communications Library (NCCL)](https://developer.nvidia.com/nccl).
 
 # API
 
@@ -18,8 +18,9 @@ version()
 ## Communicators
 
 ```@docs
+Communicator
 Communicators
-CUDA.CuDevice(comm::Communicator)
+device(comm::Communicator)
 size(comm::Communicator)
 rank(comm::Communicator)
 abort(comm::Communicator)
