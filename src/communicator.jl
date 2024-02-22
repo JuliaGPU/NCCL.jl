@@ -77,7 +77,6 @@ function device(comm::Communicator)
     return CuDevice(dev_ref[])
 end
 
-
 """
     NCCL.size(comm::Communicator) :: Int
 
@@ -119,7 +118,6 @@ function abort(comm::Communicator)
     ncclCommAbort(comm)
     return
 end
-
 
 """
     NCCL.default_device_stream(comm::Communicator) :: CuStream
