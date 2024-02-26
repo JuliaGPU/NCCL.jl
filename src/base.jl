@@ -33,6 +33,8 @@ ncclRedOp_t(::typeof(+)) = ncclSum
 ncclRedOp_t(::typeof(*)) = ncclProd
 ncclRedOp_t(::typeof(max)) = ncclMax
 ncclRedOp_t(::typeof(min)) = ncclMin
+# Handles the case where user directly passed in the ncclRedOp_t (eg. `NCCL.avg`)
+ncclRedOp_t(x::ncclRedOp_t) = x
 
 """
     NCCl.avg

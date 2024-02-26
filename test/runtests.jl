@@ -25,24 +25,49 @@ end
 @testset "Allreduce!" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    N = 512
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = CuArray(fill(Float64(ii), N))
-        recvbuf[ii] = CUDA.zeros(Float64, N)
-    end
-    NCCL.group() do
-        for ii in 1:length(devs)
-            NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+
+    @testset "sum" begin
+        recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
+        sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
+        N = 512
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(Float64(ii), N))
+            recvbuf[ii] = CUDA.zeros(Float64, N)
+        end
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+            end
+        end
+        answer = sum(1:length(devs))
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
         end
     end
-    answer = sum(1:length(devs))
-    for (ii, dev) in enumerate(devs)
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+
+    @testset "NCCL.avg" begin
+        recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
+        sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
+        N = 512
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(Float64(ii), N))
+            recvbuf[ii] = CUDA.zeros(Float64, N)
+        end
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], NCCL.avg, comms[ii])
+            end
+        end
+        answer = 1
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 
