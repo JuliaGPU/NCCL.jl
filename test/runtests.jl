@@ -62,11 +62,11 @@ end
                 NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], NCCL.avg, comms[ii])
             end
         end
-        answer = 1
+        answer = sum(1:length(devs)) / length(devs)
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)
             crecv = collect(recvbuf[ii])
-            @test all(crecv .== answer)
+            @test all(crecv .≈ answer)
         end
     end
 end
