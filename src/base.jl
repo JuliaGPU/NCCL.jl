@@ -53,3 +53,4 @@ ncclDataType_t(::Type{UInt64}) = ncclUint64
 ncclDataType_t(::Type{Float16}) = ncclFloat16
 ncclDataType_t(::Type{Float32}) = ncclFloat32
 ncclDataType_t(::Type{Float64}) = ncclFloat64
+ncclDataType_t(::Type{Complex{T}}) where {T} = ncclDataType_t(T)
