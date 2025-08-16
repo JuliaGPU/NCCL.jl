@@ -18,9 +18,8 @@ steps:
         matrix:
           setup:
             julia:
-              - "1.8"
-              - "1.9"
               - "1.10"
+              - "1.11"
 
   # then, test supported CUDA toolkits (installed through the artifact system)
   - group: "CUDA"
@@ -30,7 +29,7 @@ steps:
       - label: "CUDA {{matrix.cuda}}"
         plugins:
           - JuliaCI/julia#v1:
-              version: 1.9
+              version: 1.10
           - JuliaCI/julia-test#v1: ~
           - JuliaCI/julia-coverage#v1: ~
         agents:
@@ -42,6 +41,11 @@ steps:
         matrix:
           setup:
             cuda:
+              - "12.9"
+              - "12.8"
+              - "12.6"
+              - "12.5"
+              - "12.4"
               - "12.3"
               - "12.2"
               - "12.1"
