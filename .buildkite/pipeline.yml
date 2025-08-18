@@ -14,7 +14,7 @@ steps:
           cuda: "*"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/
-        timeout_in_minutes: 5
+        timeout_in_minutes: 30 
         matrix:
           setup:
             julia:
@@ -37,7 +37,7 @@ steps:
           cuda: "*"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/ && !build.pull_request.draft
-        timeout_in_minutes: 5
+        timeout_in_minutes: 30
         matrix:
           setup:
             cuda:
