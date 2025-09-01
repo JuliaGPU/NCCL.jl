@@ -26,47 +26,49 @@ end
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
 
-    @testset "sum" begin
-        recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-        sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-        N = 512
-        for (ii, dev) in enumerate(devs)
-            CUDA.device!(ii - 1)
-            sendbuf[ii] = CuArray(fill(Float64(ii), N))
-            recvbuf[ii] = CUDA.zeros(Float64, N)
-        end
-        NCCL.group() do
-            for ii in 1:length(devs)
-                NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+    @testset "$T" for T in (Float64, ComplexF64)
+        @testset "sum" begin
+            recvbuf = Vector{CuVector{T}}(undef, length(devs))
+            sendbuf = Vector{CuVector{T}}(undef, length(devs))
+            N = 512
+            for (ii, dev) in enumerate(devs)
+                CUDA.device!(ii - 1)
+                sendbuf[ii] = CuArray(fill(T(ii), N))
+                recvbuf[ii] = CUDA.zeros(T, N)
+            end
+            NCCL.group() do
+                for ii in 1:length(devs)
+                    NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+                end
+            end
+            answer = sum(1:length(devs))
+            for (ii, dev) in enumerate(devs)
+                device!(ii - 1)
+                crecv = collect(recvbuf[ii])
+                @test all(crecv .== answer)
             end
         end
-        answer = sum(1:length(devs))
-        for (ii, dev) in enumerate(devs)
-            device!(ii - 1)
-            crecv = collect(recvbuf[ii])
-            @test all(crecv .== answer)
-        end
-    end
 
-    @testset "NCCL.avg" begin
-        recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-        sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-        N = 512
-        for (ii, dev) in enumerate(devs)
-            CUDA.device!(ii - 1)
-            sendbuf[ii] = CuArray(fill(Float64(ii), N))
-            recvbuf[ii] = CUDA.zeros(Float64, N)
-        end
-        NCCL.group() do
-            for ii in 1:length(devs)
-                NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], NCCL.avg, comms[ii])
+        @testset "NCCL.avg" begin
+            recvbuf = Vector{CuVector{T}}(undef, length(devs))
+            sendbuf = Vector{CuVector{T}}(undef, length(devs))
+            N = 512
+            for (ii, dev) in enumerate(devs)
+                CUDA.device!(ii - 1)
+                sendbuf[ii] = CuArray(fill(T(ii), N))
+                recvbuf[ii] = CUDA.zeros(T, N)
             end
-        end
-        answer = sum(1:length(devs)) / length(devs)
-        for (ii, dev) in enumerate(devs)
-            device!(ii - 1)
-            crecv = collect(recvbuf[ii])
-            @test all(crecv .≈ answer)
+            NCCL.group() do
+                for ii in 1:length(devs)
+                    NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], NCCL.avg, comms[ii])
+                end
+            end
+            answer = sum(1:length(devs)) / length(devs)
+            for (ii, dev) in enumerate(devs)
+                device!(ii - 1)
+                crecv = collect(recvbuf[ii])
+                @test all(crecv .≈ answer)
+            end
         end
     end
 end
@@ -74,123 +76,137 @@ end
 @testset "Broadcast!" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    root  = 0
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = (ii - 1) == root ? CuArray(fill(Float64(1.0), 512)) : CUDA.zeros(Float64, 512)
-        recvbuf[ii] = CUDA.zeros(Float64, 512)
-    end
-    NCCL.group() do
-        for ii in 1:length(devs)
-            NCCL.Broadcast!(sendbuf[ii], recvbuf[ii], comms[ii]; root)
+
+    @testset "$T" for T in (Float64, ComplexF64)
+        recvbuf = Vector{CuVector{T}}(undef, length(devs))
+        sendbuf = Vector{CuVector{T}}(undef, length(devs))
+        root  = 0
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = (ii - 1) == root ? CuArray(fill(T(1.0), 512)) : CUDA.zeros(T, 512)
+            recvbuf[ii] = CUDA.zeros(T, 512)
         end
-    end
-    answer = 1.0
-    for (ii, dev) in enumerate(devs)
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.Broadcast!(sendbuf[ii], recvbuf[ii], comms[ii]; root)
+            end
+        end
+        answer = 1.0
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 
 @testset "Reduce!" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    root  = 0
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = CuArray(fill(Float64(ii), 512))
-        recvbuf[ii] = CUDA.zeros(Float64, 512)
-    end
-    NCCL.group() do
-        for ii in 1:length(devs)
-            NCCL.Reduce!(sendbuf[ii], recvbuf[ii], +, comms[ii]; root)
+    @testset "$T" for T in (Float64, ComplexF64)
+        recvbuf = Vector{CuVector{T}}(undef, length(devs))
+        sendbuf = Vector{CuVector{T}}(undef, length(devs))
+        root  = 0
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(T(ii), 512))
+            recvbuf[ii] = CUDA.zeros(T, 512)
         end
-    end
-    for (ii, dev) in enumerate(devs)
-        answer = (ii - 1) == root ? sum(1:length(devs)) : 0.0
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.Reduce!(sendbuf[ii], recvbuf[ii], +, comms[ii]; root)
+            end
+        end
+        for (ii, dev) in enumerate(devs)
+            answer = (ii - 1) == root ? sum(1:length(devs)) : 0.0
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 
 @testset "Allgather!" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = CuArray(fill(Float64(ii), 512))
-        recvbuf[ii] = CUDA.zeros(Float64, length(devs)*512)
-    end
-    NCCL.group() do
-        for ii in 1:length(devs)
-            NCCL.Allgather!(sendbuf[ii], recvbuf[ii], comms[ii])
+
+    @testset "$T" for T in (Float64, ComplexF64)
+        recvbuf = Vector{CuVector{T}}(undef, length(devs))
+        sendbuf = Vector{CuVector{T}}(undef, length(devs))
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(T(ii), 512))
+            recvbuf[ii] = CUDA.zeros(T, length(devs)*512)
         end
-    end
-    answer = vec(repeat(1:length(devs), inner=512))
-    for (ii, dev) in enumerate(devs)
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.Allgather!(sendbuf[ii], recvbuf[ii], comms[ii])
+            end
+        end
+        answer = vec(repeat(1:length(devs), inner=512))
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 
 @testset "ReduceScatter!" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = CuArray(vec(repeat(collect(1:length(devs)), inner=2)))
-        recvbuf[ii] = CUDA.zeros(Float64, 2)
-    end
-    NCCL.group() do
-        for ii in 1:length(devs)
-            NCCL.ReduceScatter!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+
+    @testset "$T" for T in (Float64, ComplexF64)
+        recvbuf = Vector{CuVector{T}}(undef, length(devs))
+        sendbuf = Vector{CuVector{T}}(undef, length(devs))
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(vec(repeat(collect(1:length(devs)), inner=2)))
+            recvbuf[ii] = CUDA.zeros(T, 2)
         end
-    end
-    for (ii, dev) in enumerate(devs)
-        answer = length(devs)*ii
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+        NCCL.group() do
+            for ii in 1:length(devs)
+                NCCL.ReduceScatter!(sendbuf[ii], recvbuf[ii], +, comms[ii])
+            end
+        end
+        for (ii, dev) in enumerate(devs)
+            answer = length(devs)*ii
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 
 @testset "Send/Recv" begin
     devs  = CUDA.devices()
     comms = NCCL.Communicators(devs)
-    recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
-    N = 512
-    for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = CuArray(fill(Float64(ii), N))
-        recvbuf[ii] = CUDA.zeros(Float64, N)
-    end
 
-    NCCL.group() do
-        for ii in 1:length(devs)
-            comm = comms[ii]
-            dest = mod(NCCL.rank(comm)+1, NCCL.size(comm))
-            source = mod(NCCL.rank(comm)-1, NCCL.size(comm))
-            NCCL.Send(sendbuf[ii], comm; dest)
-            NCCL.Recv!(recvbuf[ii], comm; source)
+    @testset "$T" for T in (Float64, ComplexF64)
+        recvbuf = Vector{CuVector{T}}(undef, length(devs))
+        sendbuf = Vector{CuVector{T}}(undef, length(devs))
+        N = 512
+        for (ii, dev) in enumerate(devs)
+            CUDA.device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(T(ii), N))
+            recvbuf[ii] = CUDA.zeros(T, N)
         end
-    end
-    for (ii, dev) in enumerate(devs)
-        answer = mod1(ii - 1, length(devs))
-        device!(ii - 1)
-        crecv = collect(recvbuf[ii])
-        @test all(crecv .== answer)
+
+        NCCL.group() do
+            for ii in 1:length(devs)
+                comm = comms[ii]
+                dest = mod(NCCL.rank(comm)+1, NCCL.size(comm))
+                source = mod(NCCL.rank(comm)-1, NCCL.size(comm))
+                NCCL.Send(sendbuf[ii], comm; dest)
+                NCCL.Recv!(recvbuf[ii], comm; source)
+            end
+        end
+        for (ii, dev) in enumerate(devs)
+            answer = mod1(ii - 1, length(devs))
+            device!(ii - 1)
+            crecv = collect(recvbuf[ii])
+            @test all(crecv .== answer)
+        end
     end
 end
 

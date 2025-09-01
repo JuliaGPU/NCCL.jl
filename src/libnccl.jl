@@ -3,17 +3,17 @@ module LibNCCL
 using NCCL_jll
 export NCCL_jll
 
-using CEnum
+using CEnum: CEnum, @cenum
 
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: @checked, CuPtr, CUstream
+import CUDA: CuPtr, CUstream, @checked
 
 function check(f)
     res = f()::ncclResult_t
     if res != ncclSuccess
-        throw(NCCLError(res))
+        throw(NCCLError(err))
     end
     return
 end
@@ -28,9 +28,19 @@ struct ncclConfig_v21700
     maxCTAs::Cint
     netName::Cstring
     splitShare::Cint
+    trafficClass::Cint
 end
 
 const ncclConfig_t = ncclConfig_v21700
+
+struct ncclSimInfo_v22200
+    size::Cint
+    magic::Cuint
+    version::Cuint
+    estimatedTime::Cfloat
+end
+
+const ncclSimInfo_t = ncclSimInfo_v22200
 
 mutable struct ncclComm end
 
@@ -152,6 +162,20 @@ end
                                   config::Ptr{ncclConfig_t})::ncclResult_t
 end
 
+@checked function ncclCommInitRankScalable(newcomm, nranks, myrank, nId, commIds, config)
+    @ccall libnccl.ncclCommInitRankScalable(newcomm::Ptr{ncclComm_t}, nranks::Cint,
+                                            myrank::Cint, nId::Cint,
+                                            commIds::Ptr{ncclUniqueId},
+                                            config::Ptr{ncclConfig_t})::ncclResult_t
+end
+
+@checked function pncclCommInitRankScalable(newcomm, nranks, myrank, nId, commIds, config)
+    @ccall libnccl.pncclCommInitRankScalable(newcomm::Ptr{ncclComm_t}, nranks::Cint,
+                                             myrank::Cint, nId::Cint,
+                                             commIds::Ptr{ncclUniqueId},
+                                             config::Ptr{ncclConfig_t})::ncclResult_t
+end
+
 function ncclGetErrorString(result)
     @ccall libnccl.ncclGetErrorString(result::ncclResult_t)::Cstring
 end
@@ -166,6 +190,16 @@ end
 
 function pncclGetLastError(comm)
     @ccall libnccl.pncclGetLastError(comm::ncclComm_t)::Cstring
+end
+
+# no prototype is found for this function at nccl.h:192:7, please use with caution
+function ncclResetDebugInit()
+    @ccall libnccl.ncclResetDebugInit()::Cvoid
+end
+
+# no prototype is found for this function at nccl.h:193:6, please use with caution
+function pncclResetDebugInit()
+    @ccall libnccl.pncclResetDebugInit()::Cvoid
 end
 
 @checked function ncclCommGetAsyncError(comm, asyncError)
@@ -202,6 +236,24 @@ end
     @ccall libnccl.pncclCommUserRank(comm::ncclComm_t, rank::Ptr{Cint})::ncclResult_t
 end
 
+@checked function ncclCommRegister(comm, buff, size, handle)
+    @ccall libnccl.ncclCommRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
+                                    handle::Ptr{Ptr{Cvoid}})::ncclResult_t
+end
+
+@checked function pncclCommRegister(comm, buff, size, handle)
+    @ccall libnccl.pncclCommRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
+                                     handle::Ptr{Ptr{Cvoid}})::ncclResult_t
+end
+
+@checked function ncclCommDeregister(comm, handle)
+    @ccall libnccl.ncclCommDeregister(comm::ncclComm_t, handle::CuPtr{Cvoid})::ncclResult_t
+end
+
+@checked function pncclCommDeregister(comm, handle)
+    @ccall libnccl.pncclCommDeregister(comm::ncclComm_t, handle::CuPtr{Cvoid})::ncclResult_t
+end
+
 @cenum ncclRedOp_dummy_t::UInt32 begin
     ncclNumOps_dummy = 5
 end
@@ -231,7 +283,10 @@ end
     ncclFloat = 7
     ncclFloat64 = 8
     ncclDouble = 8
-    ncclNumTypes = 9
+    ncclBfloat16 = 9
+    ncclFloat8e4m3 = 10
+    ncclFloat8e5m2 = 11
+    ncclNumTypes = 12
 end
 
 @cenum ncclScalarResidence_t::UInt32 begin
@@ -355,53 +410,43 @@ end
                             peer::Cint, comm::ncclComm_t, stream::CUstream)::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:416:15, please use with caution
+# no prototype is found for this function at nccl.h:454:15, please use with caution
 @checked function ncclGroupStart()
     @ccall libnccl.ncclGroupStart()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:417:14, please use with caution
+# no prototype is found for this function at nccl.h:455:14, please use with caution
 @checked function pncclGroupStart()
     @ccall libnccl.pncclGroupStart()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:426:15, please use with caution
+# no prototype is found for this function at nccl.h:464:15, please use with caution
 @checked function ncclGroupEnd()
     @ccall libnccl.ncclGroupEnd()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:427:14, please use with caution
+# no prototype is found for this function at nccl.h:465:14, please use with caution
 @checked function pncclGroupEnd()
     @ccall libnccl.pncclGroupEnd()::ncclResult_t
 end
 
-@checked function ncclCommRegister(comm, buff, size, handle)
-    @ccall libnccl.ncclCommRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
-                                    handle::Ptr{Ptr{Cvoid}})::ncclResult_t
+@checked function ncclGroupSimulateEnd(simInfo)
+    @ccall libnccl.ncclGroupSimulateEnd(simInfo::Ptr{ncclSimInfo_t})::ncclResult_t
 end
 
-@checked function pncclCommRegister(comm, buff, size, handle)
-    @ccall libnccl.pncclCommRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
-                                     handle::Ptr{Ptr{Cvoid}})::ncclResult_t
-end
-
-@checked function ncclCommDeregister(comm, handle)
-    @ccall libnccl.ncclCommDeregister(comm::ncclComm_t, handle::CuPtr{Cvoid})::ncclResult_t
-end
-
-@checked function pncclCommDeregister(comm, handle)
-    @ccall libnccl.pncclCommDeregister(comm::ncclComm_t, handle::CuPtr{Cvoid})::ncclResult_t
+@checked function pncclGroupSimulateEnd(simInfo)
+    @ccall libnccl.pncclGroupSimulateEnd(simInfo::Ptr{ncclSimInfo_t})::ncclResult_t
 end
 
 const NCCL_MAJOR = 2
 
-const NCCL_MINOR = 19
+const NCCL_MINOR = 26
 
-const NCCL_PATCH = 4
+const NCCL_PATCH = 5
 
 const NCCL_SUFFIX = ""
 
-const NCCL_VERSION_CODE = 21904
+const NCCL_VERSION_CODE = 22605
 
 const NCCL_COMM_NULL = NULL
 
@@ -413,7 +458,12 @@ const NCCL_CONFIG_UNDEF_PTR = NULL
 
 const NCCL_SPLIT_NOCOLOR = -1
 
-# Skipping MacroDefinition: NCCL_CONFIG_INITIALIZER { sizeof ( ncclConfig_t ) , /* size */ 0xcafebeef , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_CONFIG_UNDEF_INT , /* blocking */ NCCL_CONFIG_UNDEF_INT , /* cgaClusterSize */ NCCL_CONFIG_UNDEF_INT , /* minCTAs */ NCCL_CONFIG_UNDEF_INT , /* maxCTAs */ NCCL_CONFIG_UNDEF_PTR , /* netName */ NCCL_CONFIG_UNDEF_INT /* splitShare */ \
+const NCCL_UNDEF_FLOAT = -(Float32(1.0))
+
+# Skipping MacroDefinition: NCCL_CONFIG_INITIALIZER { sizeof ( ncclConfig_t ) , /* size */ 0xcafebeef , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_CONFIG_UNDEF_INT , /* blocking */ NCCL_CONFIG_UNDEF_INT , /* cgaClusterSize */ NCCL_CONFIG_UNDEF_INT , /* minCTAs */ NCCL_CONFIG_UNDEF_INT , /* maxCTAs */ NCCL_CONFIG_UNDEF_PTR , /* netName */ NCCL_CONFIG_UNDEF_INT , /* splitShare */ NCCL_CONFIG_UNDEF_INT , /* trafficClass */ \
+#}
+
+# Skipping MacroDefinition: NCCL_SIM_INFO_INITIALIZER { sizeof ( ncclSimInfo_t ) , /* size */ 0x74685283 , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_UNDEF_FLOAT /* estimated time */ \
 #}
 
 export NCCLError
