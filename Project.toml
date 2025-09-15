@@ -7,8 +7,12 @@ CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 
+# XXX: remove before merging
+[sources]
+NCCL_jll = { url = "https://github.com/JuliaBinaryWrappers/NCCL_jll.jl", rev = "main" }
+
 [compat]
 CEnum = "0.2, 0.3, 0.4, 0.5"
 CUDA = "5"
-# NCCL_jll = "2.28.3" # XXX: add this compat back
+NCCL_jll = "2.28.3"
 julia = "1.10"

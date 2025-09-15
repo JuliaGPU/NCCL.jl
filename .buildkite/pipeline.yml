@@ -1,5 +1,6 @@
 steps:
   - group: ":julia: Julia"
+    key: "julia"
     steps:
       - label: "Julia {{matrix.julia}}"
         plugins:
@@ -20,11 +21,13 @@ steps:
               - "1.11"
 
   - group: "CUDA"
+    key: "cuda"
+    # depends_on: "julia" # XXX: uncomment before merging
     steps:
       - label: "CUDA {{matrix.cuda}}"
         plugins:
           - JuliaCI/julia#v1:
-              version: 1.10
+              version: 1
           - JuliaCI/julia-test#v1: ~
           - JuliaCI/julia-coverage#v1: ~
         agents:

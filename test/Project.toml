@@ -2,3 +2,7 @@
 NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+# XXX: remove before merging
+[sources]
+NCCL_jll = { url = "https://github.com/JuliaBinaryWrappers/NCCL_jll.jl", rev = "main" }
