@@ -8,7 +8,7 @@ using CEnum: CEnum, @cenum
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: CuPtr, CUstream, @checked
+import CUDA: @checked, CuPtr, CUstream
 
 function check(f)
     res = f()::ncclResult_t
@@ -18,7 +18,7 @@ function check(f)
     return
 end
 
-struct ncclConfig_v21700
+struct ncclConfig_v22800
     size::Cint
     magic::Cuint
     version::Cuint
@@ -29,9 +29,16 @@ struct ncclConfig_v21700
     netName::Cstring
     splitShare::Cint
     trafficClass::Cint
+    commName::Cstring
+    collnetEnable::Cint
+    CTAPolicy::Cint
+    shrinkShare::Cint
+    nvlsCTAs::Cint
+    nChannelsPerNetPeer::Cint
+    nvlinkCentricSched::Cint
 end
 
-const ncclConfig_t = ncclConfig_v21700
+const ncclConfig_t = ncclConfig_v22800
 
 struct ncclSimInfo_v22200
     size::Cint
@@ -45,6 +52,10 @@ const ncclSimInfo_t = ncclSimInfo_v22200
 mutable struct ncclComm end
 
 const ncclComm_t = Ptr{ncclComm}
+
+mutable struct ncclWindow_vidmem end
+
+const ncclWindow_t = Ptr{ncclWindow_vidmem}
 
 struct ncclUniqueId
     internal::NTuple{128,Cchar}
@@ -162,6 +173,22 @@ end
                                   config::Ptr{ncclConfig_t})::ncclResult_t
 end
 
+@checked function ncclCommShrink(comm, excludeRanksList, excludeRanksCount, newcomm, config,
+                                 shrinkFlags)
+    @ccall libnccl.ncclCommShrink(comm::ncclComm_t, excludeRanksList::Ptr{Cint},
+                                  excludeRanksCount::Cint, newcomm::Ptr{ncclComm_t},
+                                  config::Ptr{ncclConfig_t},
+                                  shrinkFlags::Cint)::ncclResult_t
+end
+
+@checked function pncclCommShrink(comm, excludeRanksList, excludeRanksCount, newcomm,
+                                  config, shrinkFlags)
+    @ccall libnccl.pncclCommShrink(comm::ncclComm_t, excludeRanksList::Ptr{Cint},
+                                   excludeRanksCount::Cint, newcomm::Ptr{ncclComm_t},
+                                   config::Ptr{ncclConfig_t},
+                                   shrinkFlags::Cint)::ncclResult_t
+end
+
 @checked function ncclCommInitRankScalable(newcomm, nranks, myrank, nId, commIds, config)
     @ccall libnccl.ncclCommInitRankScalable(newcomm::Ptr{ncclComm_t}, nranks::Cint,
                                             myrank::Cint, nId::Cint,
@@ -192,12 +219,12 @@ function pncclGetLastError(comm)
     @ccall libnccl.pncclGetLastError(comm::ncclComm_t)::Cstring
 end
 
-# no prototype is found for this function at nccl.h:192:7, please use with caution
+# no prototype is found for this function at nccl.h:232:7, please use with caution
 function ncclResetDebugInit()
     @ccall libnccl.ncclResetDebugInit()::Cvoid
 end
 
-# no prototype is found for this function at nccl.h:193:6, please use with caution
+# no prototype is found for this function at nccl.h:234:6, please use with caution
 function pncclResetDebugInit()
     @ccall libnccl.pncclResetDebugInit()::Cvoid
 end
@@ -252,6 +279,28 @@ end
 
 @checked function pncclCommDeregister(comm, handle)
     @ccall libnccl.pncclCommDeregister(comm::ncclComm_t, handle::CuPtr{Cvoid})::ncclResult_t
+end
+
+@checked function ncclCommWindowRegister(comm, buff, size, win, winFlags)
+    @ccall libnccl.ncclCommWindowRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
+                                          win::Ptr{ncclWindow_t},
+                                          winFlags::Cint)::ncclResult_t
+end
+
+@checked function pncclCommWindowRegister(comm, buff, size, win, winFlags)
+    @ccall libnccl.pncclCommWindowRegister(comm::ncclComm_t, buff::CuPtr{Cvoid}, size::Cint,
+                                           win::Ptr{ncclWindow_t},
+                                           winFlags::Cint)::ncclResult_t
+end
+
+@checked function ncclCommWindowDeregister(comm, win)
+    @ccall libnccl.ncclCommWindowDeregister(comm::ncclComm_t,
+                                            win::ncclWindow_t)::ncclResult_t
+end
+
+@checked function pncclCommWindowDeregister(comm, win)
+    @ccall libnccl.pncclCommWindowDeregister(comm::ncclComm_t,
+                                             win::ncclWindow_t)::ncclResult_t
 end
 
 @cenum ncclRedOp_dummy_t::UInt32 begin
@@ -390,6 +439,42 @@ end
                                   comm::ncclComm_t, stream::CUstream)::ncclResult_t
 end
 
+@checked function ncclAlltoAll(sendbuff, recvbuff, count, datatype, comm, stream)
+    @ccall libnccl.ncclAlltoAll(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid}, count::Cint,
+                                datatype::ncclDataType_t, comm::ncclComm_t,
+                                stream::CUstream)::ncclResult_t
+end
+
+@checked function pncclAlltoAll(sendbuff, recvbuff, count, datatype, comm, stream)
+    @ccall libnccl.pncclAlltoAll(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid},
+                                 count::Cint, datatype::ncclDataType_t, comm::ncclComm_t,
+                                 stream::CUstream)::ncclResult_t
+end
+
+@checked function ncclGather(sendbuff, recvbuff, count, datatype, root, comm, stream)
+    @ccall libnccl.ncclGather(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid}, count::Cint,
+                              datatype::ncclDataType_t, root::Cint, comm::ncclComm_t,
+                              stream::CUstream)::ncclResult_t
+end
+
+@checked function pncclGather(sendbuff, recvbuff, count, datatype, root, comm, stream)
+    @ccall libnccl.pncclGather(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid}, count::Cint,
+                               datatype::ncclDataType_t, root::Cint, comm::ncclComm_t,
+                               stream::CUstream)::ncclResult_t
+end
+
+@checked function ncclScatter(sendbuff, recvbuff, count, datatype, root, comm, stream)
+    @ccall libnccl.ncclScatter(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid}, count::Cint,
+                               datatype::ncclDataType_t, root::Cint, comm::ncclComm_t,
+                               stream::CUstream)::ncclResult_t
+end
+
+@checked function pncclScatter(sendbuff, recvbuff, count, datatype, root, comm, stream)
+    @ccall libnccl.pncclScatter(sendbuff::CuPtr{Cvoid}, recvbuff::CuPtr{Cvoid}, count::Cint,
+                                datatype::ncclDataType_t, root::Cint, comm::ncclComm_t,
+                                stream::CUstream)::ncclResult_t
+end
+
 @checked function ncclSend(sendbuff, count, datatype, peer, comm, stream)
     @ccall libnccl.ncclSend(sendbuff::CuPtr{Cvoid}, count::Cint, datatype::ncclDataType_t,
                             peer::Cint, comm::ncclComm_t, stream::CUstream)::ncclResult_t
@@ -410,22 +495,22 @@ end
                             peer::Cint, comm::ncclComm_t, stream::CUstream)::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:454:15, please use with caution
+# no prototype is found for this function at nccl.h:546:15, please use with caution
 @checked function ncclGroupStart()
     @ccall libnccl.ncclGroupStart()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:455:14, please use with caution
+# no prototype is found for this function at nccl.h:547:14, please use with caution
 @checked function pncclGroupStart()
     @ccall libnccl.pncclGroupStart()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:464:15, please use with caution
+# no prototype is found for this function at nccl.h:556:15, please use with caution
 @checked function ncclGroupEnd()
     @ccall libnccl.ncclGroupEnd()::ncclResult_t
 end
 
-# no prototype is found for this function at nccl.h:465:14, please use with caution
+# no prototype is found for this function at nccl.h:557:14, please use with caution
 @checked function pncclGroupEnd()
     @ccall libnccl.pncclGroupEnd()::ncclResult_t
 end
@@ -440,13 +525,13 @@ end
 
 const NCCL_MAJOR = 2
 
-const NCCL_MINOR = 26
+const NCCL_MINOR = 28
 
-const NCCL_PATCH = 5
+const NCCL_PATCH = 3
 
 const NCCL_SUFFIX = ""
 
-const NCCL_VERSION_CODE = 22605
+const NCCL_VERSION_CODE = 22803
 
 const NCCL_COMM_NULL = NULL
 
@@ -460,7 +545,23 @@ const NCCL_SPLIT_NOCOLOR = -1
 
 const NCCL_UNDEF_FLOAT = -(Float32(1.0))
 
-# Skipping MacroDefinition: NCCL_CONFIG_INITIALIZER { sizeof ( ncclConfig_t ) , /* size */ 0xcafebeef , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_CONFIG_UNDEF_INT , /* blocking */ NCCL_CONFIG_UNDEF_INT , /* cgaClusterSize */ NCCL_CONFIG_UNDEF_INT , /* minCTAs */ NCCL_CONFIG_UNDEF_INT , /* maxCTAs */ NCCL_CONFIG_UNDEF_PTR , /* netName */ NCCL_CONFIG_UNDEF_INT , /* splitShare */ NCCL_CONFIG_UNDEF_INT , /* trafficClass */ \
+const NCCL_WIN_DEFAULT = 0x00
+
+const NCCL_WIN_COLL_SYMMETRIC = 0x01
+
+const NCCL_WIN_REQUIRED_ALIGNMENT = 4096
+
+const NCCL_CTA_POLICY_DEFAULT = 0x00
+
+const NCCL_CTA_POLICY_EFFICIENCY = 0x01
+
+const NCCL_CTA_POLICY_ZERO = 0x02
+
+const NCCL_SHRINK_DEFAULT = 0x00
+
+const NCCL_SHRINK_ABORT = 0x01
+
+# Skipping MacroDefinition: NCCL_CONFIG_INITIALIZER { sizeof ( ncclConfig_t ) , /* size */ 0xcafebeef , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_CONFIG_UNDEF_INT , /* blocking */ NCCL_CONFIG_UNDEF_INT , /* cgaClusterSize */ NCCL_CONFIG_UNDEF_INT , /* minCTAs */ NCCL_CONFIG_UNDEF_INT , /* maxCTAs */ NCCL_CONFIG_UNDEF_PTR , /* netName */ NCCL_CONFIG_UNDEF_INT , /* splitShare */ NCCL_CONFIG_UNDEF_INT , /* trafficClass */ NCCL_CONFIG_UNDEF_PTR , /* commName */ NCCL_CONFIG_UNDEF_INT , /* collnetEnable */ NCCL_CONFIG_UNDEF_INT , /* CTAPolicy */ NCCL_CONFIG_UNDEF_INT , /* shrinkShare */ NCCL_CONFIG_UNDEF_INT , /* nvlsCTAs */ NCCL_CONFIG_UNDEF_INT , /* nChannelsPerNetPeer */ NCCL_CONFIG_UNDEF_INT , /* nvlinkCentricSched */ \
 #}
 
 # Skipping MacroDefinition: NCCL_SIM_INFO_INITIALIZER { sizeof ( ncclSimInfo_t ) , /* size */ 0x74685283 , /* magic */ NCCL_VERSION ( NCCL_MAJOR , NCCL_MINOR , NCCL_PATCH ) , /* version */ NCCL_UNDEF_FLOAT /* estimated time */ \

@@ -1,7 +1,7 @@
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: CuPtr, CUstream, @checked
+import CUDA: @checked, CuPtr, CUstream
 
 function check(f)
     res = f()::ncclResult_t
