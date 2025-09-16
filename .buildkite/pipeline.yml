@@ -13,7 +13,7 @@ steps:
           cuda: "*"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/
-        timeout_in_minutes: 30
+        timeout_in_minutes: 45
         matrix:
           setup:
             julia:
@@ -22,7 +22,7 @@ steps:
 
   - group: "CUDA"
     key: "cuda"
-    # depends_on: "julia" # XXX: uncomment before merging
+    depends_on: "julia"
     steps:
       - label: "CUDA {{matrix.cuda}}"
         plugins:
@@ -35,7 +35,7 @@ steps:
           cuda: "*"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/ && !build.pull_request.draft
-        timeout_in_minutes: 30
+        timeout_in_minutes: 45
         matrix:
           setup:
             cuda:
