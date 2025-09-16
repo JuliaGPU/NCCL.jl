@@ -1,4 +1,5 @@
 steps:
+  # first, test supported Julia versions (using local CUDA as installed on the system)
   - group: ":julia: Julia"
     key: "julia"
     steps:
@@ -20,6 +21,7 @@ steps:
               - "1.10"
               - "1.11"
 
+  # then, test supported CUDA toolkits (installed through the artifact system)
   - group: "CUDA"
     key: "cuda"
     depends_on: "julia"
@@ -27,7 +29,7 @@ steps:
       - label: "CUDA {{matrix.cuda}}"
         plugins:
           - JuliaCI/julia#v1:
-              version: 1
+              version: 1.10
           - JuliaCI/julia-test#v1: ~
           - JuliaCI/julia-coverage#v1: ~
         agents:
