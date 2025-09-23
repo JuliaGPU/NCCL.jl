@@ -1,3 +1,6 @@
+count(X::CuArray{T}) where {T} = length(X)
+count(X::CuArray{Complex{T}}) where {T} = 2*length(X)
+
 """
     NCCL.Allreduce!(
         sendbuf, recvbuf, op, comm::Communicator;
@@ -11,11 +14,11 @@ or [`NCCL.avg`](@ref)), writing the result to `recvbuf` to all ranks.
 """
 function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
                     stream::CuStream=default_device_stream(comm))
-    count = length(recvbuf)
-    @assert length(sendbuf) == count
+    a_count = count(recvbuf)
+    @assert count(sendbuf) == a_count
     data_type = ncclDataType_t(eltype(recvbuf))
     _op = ncclRedOp_t(op)
-    ncclAllReduce(sendbuf, recvbuf, count, data_type, _op, comm, stream)
+    ncclAllReduce(sendbuf, recvbuf, a_count, data_type, _op, comm, stream)
     return recvbuf
 end
 
@@ -47,8 +50,8 @@ Copies array the `sendbuf` on rank `root` to `recvbuf` on all ranks.
 function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
                     stream::CuStream=default_device_stream(comm))
     data_type = ncclDataType_t(eltype(recvbuf))
-    count = length(recvbuf)
-    ncclBroadcast(sendbuf, recvbuf, count, data_type, root, comm, stream)
+    a_count = count(recvbuf)
+    ncclBroadcast(sendbuf, recvbuf, a_count, data_type, root, comm, stream)
     return recvbuf
 end
 function Broadcast!(sendrecvbuf, comm::Communicator;  root::Integer=0,
@@ -72,9 +75,9 @@ or `[`NCCL.avg`](@ref)`), writing the result to `recvbuf` on rank `root`.
 function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
                  stream::CuStream=default_device_stream(comm))
     data_type = ncclDataType_t(eltype(recvbuf))
-    count = length(recvbuf)
+    a_count = count(recvbuf)
     _op = ncclRedOp_t(op)
-    ncclReduce(sendbuf, recvbuf, count, data_type, _op, root, comm, stream)
+    ncclReduce(sendbuf, recvbuf, a_count, data_type, _op, root, comm, stream)
     return recvbuf
 end
 function Reduce!(sendrecvbuf, op, comm::Communicator; root::Integer=0,
@@ -96,9 +99,9 @@ Concatenate `sendbuf` from each rank into `recvbuf` on all ranks.
 function Allgather!(sendbuf, recvbuf, comm::Communicator;
                     stream::CuStream=default_device_stream(comm))
     data_type = ncclDataType_t(eltype(recvbuf))
-    sendcount = length(sendbuf)
-    @assert length(recvbuf) == sendcount * size(comm)
-    ncclAllGather(sendbuf, recvbuf, sendcount, data_type, comm, stream)
+    senda_count = count(sendbuf)
+    @assert count(recvbuf) == senda_count * size(comm)
+    ncclAllGather(sendbuf, recvbuf, senda_count, data_type, comm, stream)
     return recvbuf
 end
 
@@ -117,10 +120,10 @@ scattered over the devices such that `recvbuf` on each rank will contain the
 """
 function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
                         stream::CuStream=default_device_stream(comm))
-    recvcount = length(recvbuf)
-    @assert length(sendbuf) == recvcount * size(comm)
+    recva_count = count(recvbuf)
+    @assert count(sendbuf) == recva_count * size(comm)
     data_type = ncclDataType_t(eltype(recvbuf))
     _op = ncclRedOp_t(op)
-    ncclReduceScatter(sendbuf, recvbuf, recvcount, data_type, _op, comm, stream)
+    ncclReduceScatter(sendbuf, recvbuf, recva_count, data_type, _op, comm, stream)
     return recvbuf
 end
