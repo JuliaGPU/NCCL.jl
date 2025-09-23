@@ -3,6 +3,11 @@ using Test
 using CUDA
 @info "CUDA information:\n" * sprint(io->CUDA.versioninfo(io))
 
+using NCCL_jll
+@info "host_platform: $(NCCL_jll.host_platform)"
+@info "is_available: $(NCCL_jll.is_available())"
+@info "best_wrapper: $(NCCL_jll.best_wrapper)"
+
 using NCCL
 @info "NCCL version: $(NCCL.version())"
 

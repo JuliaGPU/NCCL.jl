@@ -1,6 +1,6 @@
 name = "NCCL"
 uuid = "3fe64909-d7a1-4096-9b7d-7a0f12cf0f6b"
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 CEnum = "fa961155-64e5-5f13-b03f-caf6b980ea82"
@@ -10,4 +10,5 @@ NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 [compat]
 CEnum = "0.2, 0.3, 0.4, 0.5"
 CUDA = "5"
+NCCL_jll = "2.28.3"
 julia = "1.10"
