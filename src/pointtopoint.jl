@@ -13,7 +13,7 @@ called.
 """
 function Send(sendbuf, comm::Communicator; dest::Integer,
               stream::CuStream=default_device_stream(comm))
-    count = length(sendbuf)
+    count = nccl_count(sendbuf)
     datatype = ncclDataType_t(eltype(sendbuf))
     ncclSend(sendbuf, count, datatype, dest, comm, stream)
     return nothing
@@ -34,7 +34,7 @@ Write the data from a matching [`Send`](@ref) on rank `source` into `recvbuf`.
 """
 function Recv!(recvbuf, comm::Communicator; source::Integer,
                stream::CuStream=default_device_stream(comm))
-    count = length(recvbuf)
+    count = nccl_count(recvbuf)
     datatype = ncclDataType_t(eltype(recvbuf))
     ncclRecv(recvbuf, count, datatype, source, comm, stream)
     return recvbuf.data
