@@ -10,8 +10,7 @@ steps:
           - JuliaCI/julia-test#v1: ~
           - JuliaCI/julia-coverage#v1: ~
         agents:
-          queue: "juliagpu"
-          cuda: "*"
+          queue: "cuda"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/
         timeout_in_minutes: 45
@@ -29,12 +28,11 @@ steps:
       - label: "CUDA {{matrix.cuda}}"
         plugins:
           - JuliaCI/julia#v1:
-              version: 1.10
+              version: "1.10"
           - JuliaCI/julia-test#v1: ~
           - JuliaCI/julia-coverage#v1: ~
         agents:
-          queue: "juliagpu"
-          cuda: "*"
+          queue: "cuda"
           multigpu: "*"
         if: build.message !~ /\[skip tests\]/ && !build.pull_request.draft
         timeout_in_minutes: 45
