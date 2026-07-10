@@ -8,7 +8,13 @@ using CEnum: CEnum, @cenum
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: @checked, CuPtr, CUstream
+import CUDA
+# Compatibility for CUDA v5 and v6
+if isdefined(CUDA, :CUDACore)
+    using CUDA.CUDACore: @checked, CuPtr, CUstream
+else
+    using CUDA: @checked, CuPtr, CUstream
+end
 
 function check(f)
     res = f()::ncclResult_t
