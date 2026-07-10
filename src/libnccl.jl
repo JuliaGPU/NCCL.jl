@@ -13,7 +13,7 @@ const INT_MIN = typemin(Cint)
 function check(f)
     res = f()::ncclResult_t
     if res != ncclSuccess
-        throw(NCCLError(err))
+        throw(NCCLError(res))
     end
     return
 end
