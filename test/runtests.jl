@@ -40,11 +40,16 @@ end
             sendbuf[ii] = CuArray(fill(Float64(ii), N))
             recvbuf[ii] = CUDA.zeros(Float64, N)
         end
+        current_device = CUDA.device()
+        if length(devs) > 1
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf[2], recvbuf[2], +, comms[1])
+        end
         NCCL.group() do
             for ii in 1:length(devs)
                 NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
             end
         end
+        @test CUDA.device() == current_device
         answer = sum(1:length(devs))
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)

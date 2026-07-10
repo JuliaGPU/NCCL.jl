@@ -13,6 +13,23 @@ mutable struct Communicator
     handle::ncclComm_t
 end
 
+function _buffer_device(buffer)
+    applicable(CUDA.device, buffer) && return CUDA.device(buffer)
+    if applicable(parent, buffer)
+        parent_buffer = parent(buffer)
+        parent_buffer === buffer || return _buffer_device(parent_buffer)
+    end
+    throw(ArgumentError("cannot determine the CUDA device for $(typeof(buffer))"))
+end
+
+function _check_buffer_devices(comm_device, buffers...)
+    for buffer in buffers
+        buffer_device = _buffer_device(buffer)
+        buffer_device == comm_device || throw(ArgumentError(
+            "buffer is on device $buffer_device, but the communicator is on device $comm_device"))
+    end
+end
+
 function destroy(comm::Communicator)
     if comm.handle != C_NULL
         ncclCommDestroy(comm)
