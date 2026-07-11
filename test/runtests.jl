@@ -25,6 +25,9 @@ using NCCL
     # single communicator (with nranks=1 or this would block)
     comm  = Communicator(1, 0)
     @test NCCL.device(comm) == CuDevice(0)
+
+    NCCL.destroy.(comms)
+    NCCL.destroy(comm)
 end
 
 @testset "Allreduce!" begin
@@ -79,6 +82,8 @@ end
             @test all(crecv .≈ answer)
         end
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Broadcast!" begin
@@ -103,6 +108,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Reduce!" begin
@@ -127,6 +134,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Allgather!" begin
@@ -150,6 +159,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "ReduceScatter!" begin
@@ -173,6 +184,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Send/Recv" begin
@@ -202,6 +215,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 end
