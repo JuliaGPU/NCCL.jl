@@ -15,7 +15,11 @@ function Send(sendbuf, comm::Communicator; dest::Integer,
               stream::CuStream=default_device_stream(comm))
     count = length(sendbuf)
     datatype = ncclDataType_t(eltype(sendbuf))
-    ncclSend(sendbuf, count, datatype, dest, comm, stream)
+    comm_device = device(comm)
+    _check_buffer_devices(comm_device, sendbuf)
+    CUDA.device!(comm_device) do
+        ncclSend(sendbuf, count, datatype, dest, comm, stream)
+    end
     return nothing
 end
 
@@ -36,6 +40,10 @@ function Recv!(recvbuf, comm::Communicator; source::Integer,
                stream::CuStream=default_device_stream(comm))
     count = length(recvbuf)
     datatype = ncclDataType_t(eltype(recvbuf))
-    ncclRecv(recvbuf, count, datatype, source, comm, stream)
+    comm_device = device(comm)
+    _check_buffer_devices(comm_device, recvbuf)
+    CUDA.device!(comm_device) do
+        ncclRecv(recvbuf, count, datatype, source, comm, stream)
+    end
     return recvbuf.data
 end

@@ -4,16 +4,16 @@ using NCCL_jll
 export NCCL_jll
 
 using CEnum: CEnum, @cenum
+using CUDACore: CuPtr, CUstream
+using GPUToolbox: @checked
 
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: @checked, CuPtr, CUstream
-
 function check(f)
     res = f()::ncclResult_t
     if res != ncclSuccess
-        throw(NCCLError(err))
+        throw(NCCLError(res))
     end
     return
 end

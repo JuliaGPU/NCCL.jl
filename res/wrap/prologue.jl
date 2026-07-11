@@ -1,12 +1,13 @@
 const NULL = C_NULL
 const INT_MIN = typemin(Cint)
 
-import CUDA: @checked, CuPtr, CUstream
+using CUDACore: CuPtr, CUstream
+using GPUToolbox: @checked
 
 function check(f)
     res = f()::ncclResult_t
     if res != ncclSuccess
-        throw(NCCLError(err))
+        throw(NCCLError(res))
     end
     return
 end

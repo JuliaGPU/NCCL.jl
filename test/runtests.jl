@@ -25,6 +25,9 @@ using NCCL
     # single communicator (with nranks=1 or this would block)
     comm  = Communicator(1, 0)
     @test NCCL.device(comm) == CuDevice(0)
+
+    NCCL.destroy.(comms)
+    NCCL.destroy(comm)
 end
 
 @testset "Allreduce!" begin
@@ -40,11 +43,16 @@ end
             sendbuf[ii] = CuArray(fill(Float64(ii), N))
             recvbuf[ii] = CUDA.zeros(Float64, N)
         end
+        current_device = CUDA.device()
+        if length(devs) > 1
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf[2], recvbuf[2], +, comms[1])
+        end
         NCCL.group() do
             for ii in 1:length(devs)
                 NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
             end
         end
+        @test CUDA.device() == current_device
         answer = sum(1:length(devs))
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)
@@ -74,6 +82,8 @@ end
             @test all(crecv .≈ answer)
         end
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Broadcast!" begin
@@ -98,6 +108,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Reduce!" begin
@@ -122,6 +134,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Allgather!" begin
@@ -145,6 +159,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "ReduceScatter!" begin
@@ -168,6 +184,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 @testset "Send/Recv" begin
@@ -197,6 +215,8 @@ end
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
     end
+
+    NCCL.destroy.(comms)
 end
 
 end

@@ -4,6 +4,10 @@
 
 # API
 
+Buffers passed to collective and point-to-point operations must belong to the device
+associated with the communicator. Operations temporarily activate that device, and restore
+the previously active device when they return.
+
 ```@meta
 CurrentModule = NCCL
 ```
