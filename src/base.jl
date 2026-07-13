@@ -53,3 +53,17 @@ ncclDataType_t(::Type{UInt64}) = ncclUint64
 ncclDataType_t(::Type{Float16}) = ncclFloat16
 ncclDataType_t(::Type{Float32}) = ncclFloat32
 ncclDataType_t(::Type{Float64}) = ncclFloat64
+
+# Complex types: map to their real component type (count must be doubled by caller)
+ncclDataType_t(::Type{Complex{Float16}}) = ncclFloat16
+ncclDataType_t(::Type{Complex{Float32}}) = ncclFloat32
+ncclDataType_t(::Type{Complex{Float64}}) = ncclFloat64
+
+"""
+    nccl_count(buf)
+
+Return the element count to pass to NCCL for `buf`. For Complex arrays,
+this is `2 * length(buf)` since NCCL treats them as pairs of real values.
+"""
+nccl_count(buf) = length(buf)
+nccl_count(buf::AbstractArray{<:Complex}) = 2 * length(buf)
