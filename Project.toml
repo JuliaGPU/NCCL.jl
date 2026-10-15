@@ -10,7 +10,7 @@ GPUToolbox = "096a3bc2-3ced-46d0-87f4-dd12716f4bfc"
 NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 
 [compat]
-CEnum = "0.2, 0.3, 0.4, 0.5"
+CEnum = "0.5, 1"
 CUDA = "6"
 CUDACore = "6"
 GPUToolbox = "3"
