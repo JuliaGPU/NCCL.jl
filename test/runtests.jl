@@ -1,7 +1,10 @@
 using Test
 
-using CUDA
-@info "CUDA information:\n" * sprint(io->CUDA.versioninfo(io))
+using CUDACore
+@info "CUDA driver $(CUDACore.driver_version()), runtime $(CUDACore.runtime_version())"
+for dev in CUDACore.devices()
+    @info "Device $(deviceid(dev)): $(CUDACore.name(dev))"
+end
 
 using NCCL_jll
 @info "host_platform: $(NCCL_jll.host_platform)"
@@ -15,11 +18,11 @@ using NCCL
 
 @testset "Communicator" begin
     # clique of communicators
-    comms = NCCL.Communicators(CUDA.devices())
-    for (i,dev) in enumerate(CUDA.devices())
+    comms = NCCL.Communicators(CUDACore.devices())
+    for (i,dev) in enumerate(CUDACore.devices())
         @test NCCL.rank(comms[i]) == i-1
         @test NCCL.device(comms[i]) == dev
-        @test NCCL.size(comms[i]) == length(CUDA.devices())
+        @test NCCL.size(comms[i]) == length(CUDACore.devices())
     end
 
     # single communicator (with nranks=1 or this would block)
@@ -31,7 +34,7 @@ using NCCL
 end
 
 @testset "Allreduce!" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
 
     @testset "sum" begin
@@ -39,11 +42,11 @@ end
         sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
         N = 512
         for (ii, dev) in enumerate(devs)
-            CUDA.device!(ii - 1)
+            CUDACore.device!(ii - 1)
             sendbuf[ii] = CuArray(fill(Float64(ii), N))
-            recvbuf[ii] = CUDA.zeros(Float64, N)
+            recvbuf[ii] = CUDACore.zeros(Float64, N)
         end
-        current_device = CUDA.device()
+        current_device = CUDACore.device()
         if length(devs) > 1
             @test_throws ArgumentError NCCL.Allreduce!(sendbuf[2], recvbuf[2], +, comms[1])
         end
@@ -52,7 +55,7 @@ end
                 NCCL.Allreduce!(sendbuf[ii], recvbuf[ii], +, comms[ii])
             end
         end
-        @test CUDA.device() == current_device
+        @test CUDACore.device() == current_device
         answer = sum(1:length(devs))
         for (ii, dev) in enumerate(devs)
             device!(ii - 1)
@@ -66,9 +69,9 @@ end
         sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
         N = 512
         for (ii, dev) in enumerate(devs)
-            CUDA.device!(ii - 1)
+            CUDACore.device!(ii - 1)
             sendbuf[ii] = CuArray(fill(Float64(ii), N))
-            recvbuf[ii] = CUDA.zeros(Float64, N)
+            recvbuf[ii] = CUDACore.zeros(Float64, N)
         end
         NCCL.group() do
             for ii in 1:length(devs)
@@ -87,15 +90,15 @@ end
 end
 
 @testset "Broadcast!" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
     root  = 0
     for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
-        sendbuf[ii] = (ii - 1) == root ? CuArray(fill(Float64(1.0), 512)) : CUDA.zeros(Float64, 512)
-        recvbuf[ii] = CUDA.zeros(Float64, 512)
+        CUDACore.device!(ii - 1)
+        sendbuf[ii] = (ii - 1) == root ? CuArray(fill(Float64(1.0), 512)) : CUDACore.zeros(Float64, 512)
+        recvbuf[ii] = CUDACore.zeros(Float64, 512)
     end
     NCCL.group() do
         for ii in 1:length(devs)
@@ -113,15 +116,15 @@ end
 end
 
 @testset "Reduce!" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
     root  = 0
     for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
+        CUDACore.device!(ii - 1)
         sendbuf[ii] = CuArray(fill(Float64(ii), 512))
-        recvbuf[ii] = CUDA.zeros(Float64, 512)
+        recvbuf[ii] = CUDACore.zeros(Float64, 512)
     end
     NCCL.group() do
         for ii in 1:length(devs)
@@ -139,14 +142,14 @@ end
 end
 
 @testset "Allgather!" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
     for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
+        CUDACore.device!(ii - 1)
         sendbuf[ii] = CuArray(fill(Float64(ii), 512))
-        recvbuf[ii] = CUDA.zeros(Float64, length(devs)*512)
+        recvbuf[ii] = CUDACore.zeros(Float64, length(devs)*512)
     end
     NCCL.group() do
         for ii in 1:length(devs)
@@ -164,14 +167,14 @@ end
 end
 
 @testset "ReduceScatter!" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
     for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
+        CUDACore.device!(ii - 1)
         sendbuf[ii] = CuArray(vec(repeat(collect(1:length(devs)), inner=2)))
-        recvbuf[ii] = CUDA.zeros(Float64, 2)
+        recvbuf[ii] = CUDACore.zeros(Float64, 2)
     end
     NCCL.group() do
         for ii in 1:length(devs)
@@ -189,15 +192,15 @@ end
 end
 
 @testset "Send/Recv" begin
-    devs  = CUDA.devices()
+    devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
     recvbuf = Vector{CuVector{Float64}}(undef, length(devs))
     sendbuf = Vector{CuVector{Float64}}(undef, length(devs))
     N = 512
     for (ii, dev) in enumerate(devs)
-        CUDA.device!(ii - 1)
+        CUDACore.device!(ii - 1)
         sendbuf[ii] = CuArray(fill(Float64(ii), N))
-        recvbuf[ii] = CUDA.zeros(Float64, N)
+        recvbuf[ii] = CUDACore.zeros(Float64, N)
     end
 
     NCCL.group() do

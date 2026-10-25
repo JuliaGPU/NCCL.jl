@@ -17,7 +17,7 @@ function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
     _op = ncclRedOp_t(op)
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclAllReduce(sendbuf, recvbuf, count, data_type, _op, comm, stream)
     end
     return recvbuf
@@ -54,7 +54,7 @@ function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
     count = length(recvbuf)
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclBroadcast(sendbuf, recvbuf, count, data_type, root, comm, stream)
     end
     return recvbuf
@@ -84,7 +84,7 @@ function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
     _op = ncclRedOp_t(op)
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclReduce(sendbuf, recvbuf, count, data_type, _op, root, comm, stream)
     end
     return recvbuf
@@ -112,7 +112,7 @@ function Allgather!(sendbuf, recvbuf, comm::Communicator;
     @assert length(recvbuf) == sendcount * size(comm)
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclAllGather(sendbuf, recvbuf, sendcount, data_type, comm, stream)
     end
     return recvbuf
@@ -139,7 +139,7 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
     _op = ncclRedOp_t(op)
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclReduceScatter(sendbuf, recvbuf, recvcount, data_type, _op, comm, stream)
     end
     return recvbuf
