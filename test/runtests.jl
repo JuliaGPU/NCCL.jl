@@ -228,6 +228,78 @@ end
     NCCL.destroy(comms)
 end
 
+# keep a stream busy for a while
+function spin(cycles)
+    start = CUDACore.clock(UInt64)
+    while CUDACore.clock(UInt64) - start < cycles
+    end
+    return
+end
+
+@testset "streams" begin
+    devs = collect(CUDACore.devices())
+    dev = last(devs)
+    comm = Communicator(1, 0, NCCL.UniqueID(); device=dev)
+    N = 512
+
+    device!(dev) do
+        sendbuf = CuArray(fill(42.0, N))
+        recvbuf = CUDACore.zeros(Float64, N)
+
+        s = CuStream()
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+        synchronize(s)
+        @test CUDACore.isdone(s)
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the operation runs on `s`, after the kernel. if the buffers were considered to be
+        # used by the task's stream, reading them on that stream would not wait for it.
+        recvbuf .= 0
+        synchronize()
+        @cuda stream=s spin(UInt64(1) << 30)
+        @test !CUDACore.isdone(s)
+        @test NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s) === recvbuf
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the default streams aren't bound to a context
+        recvbuf .= 0
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=CUDACore.default_stream())
+        @test Array(recvbuf) == fill(42.0, N)
+        recvbuf .= 0
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=legacy_stream())
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the per-thread default stream differs between the threads a task can run on,
+        # whether it is passed explicitly or is the task's stream
+        @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm;
+                                                   stream=per_thread_stream())
+        stream!(per_thread_stream()) do
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm)
+        end
+    end
+
+    # an operation can be issued while another device is active
+    device!(first(devs)) do
+        sendbuf, recvbuf = device!(dev) do
+            CuArray(fill(1.0, N)), CUDACore.zeros(Float64, N)
+        end
+        s = device!(() -> CuStream(), dev)
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+        @test CUDACore.device() == first(devs)
+        device!(dev) do
+            @test Array(recvbuf) == fill(1.0, N)
+        end
+
+        # a stream on another device
+        if length(devs) > 1
+            other = CuStream()
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm;
+                                                       stream=other)
+        end
+    end
+
+    NCCL.destroy(comm)
+end
 
 @testset "struct layout" begin
     # offsets and sizes from compiling a C program that prints `sizeof` and `offsetof` of

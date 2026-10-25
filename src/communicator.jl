@@ -74,8 +74,32 @@ function _check_buffer_devices(comm_device, buffers...)
     end
 end
 
+function check_stream(comm::Communicator, stream::CuStream)
+    # the per-thread default stream is a different stream on every OS thread, while CUDACore
+    # identifies streams by their handle: a task that migrates to another thread would not
+    # wait for its own work. the legacy default stream (also `default_stream()`, as neither
+    # CUDACore nor NCCL use the per-thread API variants) is a single stream per context,
+    # which synchronizes with CUDACore's (blocking) task streams, so it is safe to use.
+    if stream.handle == CUDACore.CU_STREAM_PER_THREAD
+        throw(ArgumentError(
+            "NCCL operations cannot be issued on the per-thread default stream; use a `CuStream` or the task's stream instead"))
+    end
+    # the default streams aren't bound to a context
+    if stream.ctx !== nothing && stream.ctx != comm.context
+        throw(ArgumentError(
+            "stream belongs to a different context than the communicator, which is on device $(comm.device)"))
+    end
+    return
+end
+
 # Issue an NCCL operation on `comm`, calling `f` with a raw device pointer for each of
 # `buffers`, followed by the communicator and stream handles.
+#
+# Unless a stream is given, the operation is issued on the task-local stream of the
+# communicator's device. The buffers are converted to pointers while that stream is the
+# task's current stream, as CUDACore attributes the use of memory whose pointer is taken to
+# the current stream: it then waits for work on other streams that used the memory before,
+# and later uses of the memory on other streams wait for the NCCL operation.
 #
 # Converting a buffer to a pointer can yield (CUDACore may synchronize), and while this task
 # is suspended another task on the same thread may open a group. The ownership check
@@ -83,21 +107,22 @@ end
 # between the check and the native call that would join the group. For the same reason,
 # callers have to convert scalar arguments (roots, peers) to their C type before calling
 # `submit`: converting a custom `Integer` can yield as well.
-#
-# Unless a stream is given, the operation is issued on the task-local stream of the
-# communicator's device.
 function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
     _check_buffer_devices(comm.device, buffers...)
     CUDACore.context!(comm.context) do
+        # the task's stream can be set to anything with `stream!`
         s = stream === nothing ? CUDACore.stream() : stream
-        cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
-        GC.@preserve buffers cbuffers comm s begin
-            ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
-            comm_handle = Base.unsafe_convert(ncclComm_t, comm)
-            stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
-            check_group_owner()
-            f(ptrs..., comm_handle, stream_handle)
+        check_stream(comm, s)
+        CUDACore.stream!(s) do
+            cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
+            GC.@preserve buffers cbuffers comm s begin
+                ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
+                comm_handle = Base.unsafe_convert(ncclComm_t, comm)
+                stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
+                check_group_owner()
+                f(ptrs..., comm_handle, stream_handle)
+            end
         end
     end
 end
