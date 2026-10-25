@@ -33,7 +33,8 @@ Communicators
 device(comm::Communicator)
 size(comm::Communicator)
 rank(comm::Communicator)
-abort(comm::Communicator)
+destroy
+abort
 default_device_stream
 ```
 

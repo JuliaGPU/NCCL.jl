@@ -47,7 +47,7 @@ end
     comm  = Communicator(1, 0)
     @test NCCL.device(comm) == CuDevice(0)
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
     NCCL.destroy(comm)
 end
 
@@ -104,7 +104,7 @@ end
         end
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 @testset "Broadcast!" begin
@@ -130,7 +130,7 @@ end
         @test all(crecv .== answer)
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 @testset "Reduce!" begin
@@ -156,7 +156,7 @@ end
         @test all(crecv .== answer)
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 @testset "Allgather!" begin
@@ -181,7 +181,7 @@ end
         @test all(crecv .== answer)
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 @testset "ReduceScatter!" begin
@@ -206,7 +206,7 @@ end
         @test all(crecv .== answer)
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 @testset "Send/Recv" begin
@@ -237,7 +237,7 @@ end
         @test all(crecv .== answer)
     end
 
-    NCCL.destroy.(comms)
+    NCCL.destroy(comms)
 end
 
 
@@ -292,6 +292,124 @@ end
     err = NCCL.NCCLError(err.code)
     @test isempty(err.msg)
     @test !occursin('\n', sprint(showerror, err))
+end
+
+@testset "lifetime" begin
+    # destroying communicators synchronizes with their peers, and can deadlock
+    script = raw"""
+        using Test, CUDACore, NCCL
+
+        devs = collect(CUDACore.devices())
+        N = 512
+
+        function allreduce(comms)
+            bufs = map(devs) do dev
+                device!(() -> CUDACore.ones(Float64, N), dev)
+            end
+            NCCL.group() do
+                for (buf, comm) in zip(bufs, comms)
+                    NCCL.Allreduce!(buf, +, comm)
+                end
+            end
+            all(zip(devs, bufs)) do (dev, buf)
+                device!(() -> all(==(length(devs)), Array(buf)), dev)
+            end
+        end
+
+        @testset "lifetime" begin
+
+        @testset "destroy" begin
+            comms = NCCL.Communicators(devs)
+            @test all(isopen, comms)
+            @test allreduce(comms)
+            NCCL.destroy(comms)
+            @test !any(isopen, comms)
+
+            # destroying again does nothing
+            NCCL.destroy(comms)
+            NCCL.destroy(comms[1])
+
+            # closed communicators can't be used
+            buf = device!(() -> CUDACore.ones(Float64, N), devs[1])
+            @test_throws InvalidStateException NCCL.Allreduce!(buf, +, comms[1])
+            @test_throws InvalidStateException NCCL.Send(buf, comms[1]; dest=0)
+            @test_throws InvalidStateException NCCL.group() do
+                NCCL.Allreduce!(buf, +, comms[1])
+            end
+            # the group was ended: another task can open one
+            @test fetch(@async NCCL.group(() -> true))
+
+            # a vector with closed and open communicators
+            comms = NCCL.Communicators(devs)
+            more = NCCL.Communicators(devs)
+            NCCL.destroy(comms)
+            NCCL.destroy([comms; more])
+            @test !any(isopen, more)
+
+            # duplicates are destroyed once
+            comms = NCCL.Communicators(devs)
+            NCCL.destroy([comms; reverse(comms)])
+            @test !any(isopen, comms)
+            comms = NCCL.Communicators(devs)
+            NCCL.abort([comms; comms])
+            @test !any(isopen, comms)
+        end
+
+        @testset "abort" begin
+            comms = NCCL.Communicators(devs)
+            @test allreduce(comms)
+            NCCL.abort(comms)
+            @test !any(isopen, comms)
+            NCCL.abort(comms)
+            NCCL.destroy(comms)
+
+            comm = only(NCCL.Communicators(devs[1:1]))
+            NCCL.abort(comm)
+            @test !isopen(comm)
+        end
+
+        @testset "inside a group" begin
+            comms = NCCL.Communicators(devs)
+            @test_throws ArgumentError NCCL.group(() -> NCCL.destroy(comms))
+            @test_throws ArgumentError NCCL.group(() -> NCCL.abort(comms[1]))
+            @test all(isopen, comms)
+            NCCL.destroy(comms)
+        end
+
+        @testset "do-block" begin
+            # normal return: destroyed
+            local escaped
+            ret = NCCL.Communicators(devs) do comms
+                escaped = comms
+                allreduce(comms)
+            end
+            @test ret
+            @test !any(isopen, escaped)
+
+            # exception: aborted, and the exception is rethrown
+            @test_throws ErrorException("oops") NCCL.Communicators(devs) do comms
+                escaped = comms
+                @assert allreduce(comms)
+                error("oops")
+            end
+            @test !any(isopen, escaped)
+
+            # the original exception is preserved if aborting fails as well (here, because
+            # it happens inside a group)
+            @test_throws ErrorException("inner") NCCL.group() do
+                NCCL.Communicators(devs) do comms
+                    escaped = comms
+                    error("inner")
+                end
+            end
+            @test all(isopen, escaped)
+            @test allreduce(escaped)
+            NCCL.destroy(escaped)
+        end
+
+        end
+        """
+    @test run_script(script; timeout=300)
 end
 
 @testset "large count" begin
@@ -635,7 +753,7 @@ end
 
         end
 
-        NCCL.destroy.(comms)
+        NCCL.destroy(comms)
         """
     @test run_script(script; threads=4, timeout=300)
 end
@@ -686,7 +804,7 @@ if length(CUDACore.devices()) >= 2
                 NCCL.Communicator(2, 1; unique_id=id)
             end
             comms = fetch.([t1, t2])
-            NCCL.destroy.(comms)
+            NCCL.destroy(comms)
             """
         @test run_script(script; threads=4, timeout=120)
     end
