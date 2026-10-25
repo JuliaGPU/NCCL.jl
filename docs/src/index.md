@@ -19,6 +19,35 @@ calling NCCL: buffers whose lengths don't fit the operation throw a `DimensionMi
 other invalid arguments (e.g. non-contiguous buffers, mismatched element types, ranks out of
 range, or partially overlapping buffers) an `ArgumentError`.
 
+## Creating communicators with MPI
+
+The ranks of a communicator need to agree on an [`NCCL.UniqueID`](@ref), which one of them
+creates and sends to the others. In a program that uses MPI, loading MPI.jl enables
+`NCCL.Communicator(mpicomm)`, which does this over an MPI communicator: rank 0 creates the
+identifier and broadcasts it, and every MPI rank becomes the NCCL rank with the same index.
+
+Each process has to use a different GPU of its node. Unless each process can only see a
+single GPU (e.g. by setting `CUDA_VISIBLE_DEVICES` per process), select one based on the
+rank of the process among the processes on the same node:
+
+```julia
+using MPI, CUDACore, NCCL
+MPI.Init()
+
+world_rank = MPI.Comm_rank(MPI.COMM_WORLD)
+node_comm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, world_rank)
+MPI.Comm_size(node_comm) <= ndevices() ||
+    error("more processes on this node than GPUs")
+CUDACore.device!(MPI.Comm_rank(node_comm))
+
+NCCL.Communicator(MPI.COMM_WORLD) do comm
+    buf = CUDACore.fill(Float32(world_rank), 1024)
+    NCCL.Allreduce!(buf, +, comm)
+end
+```
+
+Run it with MPI.jl's launcher, e.g. `` `$(MPI.mpiexec()) -n 4 julia --project script.jl` ``.
+
 ## Element types
 
 NCCL natively supports buffers of `Int8`, `UInt8`, `Int32`, `UInt32`, `Int64`, `UInt64`,

@@ -13,6 +13,7 @@ using NCCL_jll
 
 using NCCL
 using BFloat16s: BFloat16
+using MPI
 @info "NCCL version: $(NCCL.version())"
 
 include("helpers.jl")
@@ -1572,6 +1573,128 @@ end
 else
     @info "Skipping the tests with multiple processes, which need 2 GPUs"
     @test_skip "multiple processes (needs 2 GPUs)"
+end
+
+@testset "MPI" begin
+    @test Base.get_extension(NCCL, :NCCLMPIExt) !== nothing
+    # this process doesn't initialize MPI
+    @test_throws ErrorException NCCL.Communicator(MPI.COMM_WORLD)
+
+    # without MPI.jl, the extension's methods don't exist
+    @test run_script("""
+        using NCCL, Test
+        @test Base.get_extension(NCCL, :NCCLMPIExt) === nothing
+        for f in (() -> NCCL.Communicator(42), () -> NCCL.Communicator(identity, 42; device=0))
+            err = try f() catch err err end
+            @test err isa MethodError
+            @test occursin("using MPI", sprint(showerror, err))
+        end
+        err = try NCCL.Communicator(1, 2) catch err err end
+        @test !occursin("using MPI", sprint(showerror, err))
+        """; timeout=120)
+
+    if length(CUDACore.devices()) >= 2
+        nranks = length(CUDACore.devices())
+        @test run_mpi(raw"""
+            using MPI, CUDACore, NCCL, Test
+            MPI.Init()
+            world = MPI.COMM_WORLD
+            rank = MPI.Comm_rank(world)
+            nranks = MPI.Comm_size(world)
+
+            # select a device per process on this node
+            node = MPI.Comm_split_type(world, MPI.COMM_TYPE_SHARED, rank)
+            @assert MPI.Comm_size(node) <= ndevices()
+            device!(MPI.Comm_rank(node))
+
+            comm = NCCL.Communicator(world)
+            @test NCCL.rank(comm) == rank
+            @test NCCL.nranks(comm) == nranks
+            @test NCCL.device(comm) == device()
+
+            data = [Float64(1000rank + i) for i in 1:1024]
+            buf = CuArray(data)
+            NCCL.Allreduce!(buf, +, comm)
+            @test Array(buf) == MPI.Allreduce(data, +, world)
+
+            # split both communicators the same way, and compare the ranks and results
+            color = rank % 2
+            subworld = MPI.Comm_split(world, color, nranks - rank)
+            sub = NCCL.split(comm, color, nranks - rank)
+            @test NCCL.rank(sub) == MPI.Comm_rank(subworld)
+            @test NCCL.nranks(sub) == MPI.Comm_size(subworld)
+            buf = CuArray(data)
+            NCCL.Allreduce!(buf, max, sub)
+            @test Array(buf) == MPI.Allreduce(data, max, subworld)
+            NCCL.destroy(sub)
+            NCCL.destroy(comm)
+            @test !isopen(comm)
+
+            # the do-block form, on the split MPI communicators (each with its own rank 0)
+            ret = NCCL.Communicator(subworld; config=NCCL.Config(comm_name="mpi")) do comm
+                @test NCCL.rank(comm) == MPI.Comm_rank(subworld)
+                buf = CuArray([1.0])
+                NCCL.Allreduce!(buf, +, comm)
+                @test Array(buf) == [MPI.Comm_size(subworld)]
+                comm
+            end
+            @test !isopen(ret)
+
+            MPI.Finalize()
+            """, nranks)
+
+        # a rank-local error on one rank makes all ranks throw, instead of the others waiting
+        # for that rank in the initialization
+        @test run_mpi(raw"""
+            using MPI, CUDACore, NCCL, Test
+            MPI.Init()
+            world = MPI.COMM_WORLD
+            rank = MPI.Comm_rank(world)
+            node = MPI.Comm_split_type(world, MPI.COMM_TYPE_SHARED, rank)
+            local_rank = MPI.Comm_rank(node)
+            @assert MPI.Comm_size(node) <= ndevices()
+            device!(local_rank)
+
+            # an invalid device on the last rank
+            bad = rank == MPI.Comm_size(world) - 1
+            err = try
+                NCCL.Communicator(world; device = bad ? ndevices() : local_rank)
+            catch err
+                err
+            end
+            if bad
+                @test err isa CuError
+            else
+                @test err isa ErrorException && occursin("1 rank(s)", err.msg)
+            end
+
+            # the ranks can still create a communicator afterwards
+            NCCL.Communicator(world) do comm
+                buf = CuArray([1.0])
+                NCCL.Allreduce!(buf, +, comm)
+                @test Array(buf) == [MPI.Comm_size(world)]
+            end
+
+            # failing to create the unique ID on rank 0 (NCCL reads NCCL_COMM_ID whenever it
+            # creates one)
+            rank == 0 && (ENV["NCCL_COMM_ID"] = "invalid")
+            err = try
+                NCCL.Communicator(world)
+            catch err
+                err
+            end
+            if rank == 0
+                @test err isa NCCL.NCCLError
+            else
+                @test err isa ErrorException && occursin("rank 0", err.msg)
+            end
+
+            MPI.Finalize()
+            """, nranks; timeout=180)
+    else
+        @info "Skipping the MPI test with multiple processes, which needs 2 GPUs"
+        @test_skip "MPI with multiple processes (needs 2 GPUs)"
+    end
 end
 
 @testset "large count" begin

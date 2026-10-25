@@ -106,3 +106,10 @@ function run_ranks(script, nranks; timeout=300)
         run_processes(cmds; timeout, names=["rank $rank" for rank in 0:nranks-1])
     end
 end
+
+# Run `script` in `nranks` processes launched by MPI.jl's `mpiexec`. Every process sees all
+# devices of this process.
+function run_mpi(script, nranks; timeout=300)
+    cmd = `$(MPI.mpiexec()) -n $nranks $(julia_cmd(script))`
+    run_processes([cmd]; timeout, names=["mpiexec"])
+end
