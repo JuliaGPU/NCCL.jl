@@ -31,11 +31,12 @@ const builtin_ops = (ncclSum, ncclProd, ncclMax, ncclMin, ncclAvg)
 reduction_op(op::Union{typeof(+),typeof(*),typeof(max),typeof(min)}) = ncclRedOp_t(op)
 function reduction_op(op::ncclRedOp_t)
     op in builtin_ops || throw(ArgumentError(
-        "unsupported reduction operator $op; use +, *, max, min or NCCL.avg"))
+        "unsupported reduction operator $op; use +, *, max, min, NCCL.avg or NCCL.PreMulSum"))
     return op
 end
+reduction_op(op::PreMulSum) = op
 reduction_op(op) = throw(ArgumentError(
-    "unsupported reduction operator $op; use +, *, max, min or NCCL.avg"))
+    "unsupported reduction operator $op; use +, *, max, min, NCCL.avg or NCCL.PreMulSum"))
 
 opname(op) = string(op)
 function opname(op::ncclRedOp_t)
@@ -44,13 +45,15 @@ function opname(op::ncclRedOp_t)
 end
 
 # Complex numbers are reduced as pairs of real numbers, which is only correct for operators
-# that act on the real and imaginary parts independently. (A `PreMulSum` with a real
-# factor would qualify as well.)
+# that act on the real and imaginary parts independently. That includes multiplying by the
+# real scalar of a `PreMulSum` (complex scalars are rejected when constructing one).
 componentwise(op) = reduction_op(op) in (ncclSum, ncclAvg)
+componentwise(::PreMulSum) = true
 
 # Booleans are reduced as bytes holding 0 or 1. The maximum and minimum of those are the
 # logical or and and, while sums and averages don't result in booleans.
 logical(op) = reduction_op(op) in (ncclMax, ncclMin)
+logical(::PreMulSum) = false
 
 
 ## lowering
@@ -75,7 +78,7 @@ end
 reduction_type(::Type{T}, op) where {T<:NativeType} = (ncclDataType_t(T), 1)
 function reduction_type(::Type{Complex{T}}, op) where {T<:NativeFloat}
     componentwise(op) || throw(ArgumentError(
-        "cannot reduce $(Complex{T}) values with $(opname(op)): NCCL reduces their real and imaginary parts separately, which is only correct for + and NCCL.avg"))
+        "cannot reduce $(Complex{T}) values with $(opname(op)): NCCL reduces their real and imaginary parts separately, which is only correct for +, NCCL.avg and NCCL.PreMulSum"))
     return ncclDataType_t(T), 2
 end
 function reduction_type(::Type{Bool}, op)
@@ -106,11 +109,44 @@ function lower_movement(::Type{T}, len::Int) where {T}
     return datatype, lowered_count(len, multiplier)
 end
 
+# The NCCL operator to reduce values of type `T`. NCCL multiplies by the scalar of a
+# `PreMulSum` in the element type it reduces, so the scalar is converted to that type (the
+# real type of complex numbers). This happens before `submit`, as converting a custom
+# `Real` could yield.
+lower_op(op::ncclRedOp_t, ::Type) = op
+lower_op(op::PreMulSum, ::Type{T}) where {T} = PreMulSum(convert(real(T), op.scalar))
+
 # The NCCL element type, element count and operator to reduce a buffer of `len` elements of
-# type `T` with `op`.
+# type `T` with `op`. The operator is to be passed to `with_reduction_op`.
 function lower_reduction(::Type{T}, len::Int, op) where {T}
     redop = reduction_op(op)
     check_isbits(T)
     datatype, multiplier = reduction_type(T, op)
-    return datatype, lowered_count(len, multiplier), redop
+    return datatype, lowered_count(len, multiplier), lower_op(redop, T)
+end
+
+# Call `f` with the handle of the lowered reduction operator `op` for `datatype`. A
+# `PreMulSum` operator is created on the communicator for the duration of the call, so `f`
+# must issue the NCCL operation using it. NCCL copies a custom operator when an operation
+# using it is issued, also inside a group (`taskAppend` in its enqueue.cc), and the operator
+# may be destroyed as soon as that call returns. Has to be called from the `submit`
+# callback: creating and destroying an operator are NCCL calls on the communicator too.
+with_reduction_op(f, op::ncclRedOp_t, datatype, comm_handle) = f(op)
+function with_reduction_op(f, op::PreMulSum{T}, datatype, comm_handle) where {T}
+    handle = Ref{ncclRedOp_t}()
+    # with `ncclScalarHostImmediate`, NCCL copies the scalar before returning
+    scalar = Ref{T}(op.scalar)
+    GC.@preserve scalar begin
+        ptr = Ptr{Cvoid}(Base.unsafe_convert(Ptr{T}, scalar))
+        ncclRedOpCreatePreMulSum(handle, ptr, datatype, ncclScalarHostImmediate, comm_handle)
+    end
+    ret = try
+        f(handle[])
+    catch
+        # the operation's error is the relevant one
+        LibNCCL.unchecked_ncclRedOpDestroy(handle[], comm_handle)
+        rethrow()
+    end
+    ncclRedOpDestroy(handle[], comm_handle)
+    return ret
 end

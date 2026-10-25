@@ -57,8 +57,8 @@ NCCL as one of these:
 
 - complex numbers with `Float16`, `Float32`, `Float64` or `BFloat16` parts are passed as
   pairs of real numbers. NCCL then reduces the real and imaginary parts separately, which is
-  only correct for `+` and [`NCCL.avg`](@ref): reducing complex numbers with `*`, `max` or
-  `min` throws an `ArgumentError`.
+  only correct for `+`, [`NCCL.avg`](@ref) and [`NCCL.PreMulSum`](@ref) with a real scalar:
+  reducing complex numbers with `*`, `max` or `min` throws an `ArgumentError`.
 - `Bool`s are passed as bytes. They can only be reduced with `max` (logical or) and `min`
   (logical and), since sums and averages of booleans are not booleans.
 - other `isbits` types (e.g. `Int16`, `Char`, tuples or immutable structs) are passed as
@@ -105,6 +105,10 @@ group
 
 ## Collective communication
 
+Reductions combine the values of all ranks with `+`, `*`, `max`, `min`, [`NCCL.avg`](@ref),
+or [`NCCL.PreMulSum`](@ref), which multiplies each rank's values by a scalar before summing
+them.
+
 ```@docs
 Allreduce!
 Broadcast!
@@ -115,6 +119,7 @@ Alltoall!
 Gather!
 Scatter!
 avg
+PreMulSum
 ```
 
 ## Point-to-point communication
