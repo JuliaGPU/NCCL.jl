@@ -30,6 +30,35 @@ UInt24(x::Integer) = Core.Intrinsics.trunc_int(UInt24, UInt32(x))
 
 @testset "NCCL" begin
 
+@testset "public API" begin
+    names = [:Communicator, :Communicators, :UniqueID, :Config, :rank, :nranks, :device,
+             :split, :destroy, :abort, :Allreduce!, :Broadcast!, :Reduce!, :Allgather!,
+             :ReduceScatter!, :Alltoall!, :Gather!, :Scatter!, :Send, :Recv!, :avg,
+             :PreMulSum, :group, :version, :is_available, :NCCLError]
+    if VERSION >= v"1.11"
+        @testset "$name is public" for name in names
+            @test Base.ispublic(NCCL, name)
+        end
+    end
+
+    # every name has to be in a `@docs` block of the API reference
+    documented = Set{Symbol}()
+    in_docs = false
+    for line in eachline(joinpath(pkgdir(NCCL), "docs", "src", "api.md"))
+        if startswith(line, "```@docs")
+            in_docs = true
+        elseif startswith(line, "```")
+            in_docs = false
+        elseif in_docs && !isempty(strip(line))
+            ref = first(Base.split(strip(line), '('))
+            push!(documented, Symbol(last(Base.split(ref, '.'))))
+        end
+    end
+    @testset "$name is documented" for name in names
+        @test name in documented
+    end
+end
+
 @testset "Communicator" begin
     # clique of communicators
     comms = NCCL.Communicators(CUDACore.devices())
