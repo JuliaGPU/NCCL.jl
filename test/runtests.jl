@@ -14,6 +14,24 @@ using NCCL_jll
 using NCCL
 @info "NCCL version: $(NCCL.version())"
 
+# Run a Julia script in a separate process, killing it if it doesn't finish in time, so
+# that a deadlock fails the test instead of hanging the test suite.
+function run_script(script; threads=1, timeout=300)
+    cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) --threads=$threads -e $script`
+    output = Pipe()
+    proc = run(pipeline(ignorestatus(cmd); stdout=output, stderr=output); wait=false)
+    close(output.in)
+    reader = @async read(output, String)
+    if timedwait(() -> process_exited(proc), timeout) === :timed_out
+        @error "Script did not finish within $timeout seconds, killing it"
+        kill(proc, Base.SIGKILL)
+    end
+    wait(proc)
+    log = fetch(reader)
+    success(proc) || println(log)
+    return success(proc)
+end
+
 @testset "NCCL" begin
 
 @testset "Communicator" begin
@@ -220,6 +238,106 @@ end
     end
 
     NCCL.destroy.(comms)
+end
+
+
+@testset "struct layout" begin
+    # offsets and sizes from compiling a C program that prints `sizeof` and `offsetof` of
+    # these structs, against the header the bindings were generated from (NCCL 2.32.3).
+    layouts = [
+        NCCL.LibNCCL.ncclConfig_t => (120, [0, 8, 12, 16, 20, 24, 28, 32, 40, 44, 48, 56,
+                                            60, 64, 68, 72, 76, 80, 84, 88, 92, 96, 100,
+                                            104, 108, 112]),
+        NCCL.LibNCCL.ncclCollConfig_t => (72, [0, 8, 12, 16, 24, 28, 32, 36, 40, 48, 52,
+                                               56, 64]),
+        NCCL.LibNCCL.ncclSimInfo_t => (24, [0, 8, 12, 16]),
+        NCCL.LibNCCL.ncclEncryptionConfig_t => (32, [0, 8, 12, 16, 24]),
+        NCCL.LibNCCL.ncclWaitSignalDesc_t => (16, [0, 4, 8, 12]),
+        NCCL.LibNCCL.ncclConfigExt_t => (24, nothing),
+        NCCL.LibNCCL.ncclUniqueId => (128, nothing),
+    ]
+    for (T, (size, offsets)) in layouts
+        @test sizeof(T) == size
+        if offsets !== nothing
+            @test fieldcount(T) == length(offsets)
+            @test [fieldoffset(T, i) for i in 1:fieldcount(T)] == offsets
+        end
+    end
+end
+
+@testset "large count" begin
+    # counts used to be passed as `Cint`, and failed beyond `typemax(Cint)`
+    script = """
+        using CUDACore, NCCL, Test
+        n = 2^31 + 8
+        if CUDACore.free_memory() < 2n + 2^30
+            @warn "Not enough GPU memory, skipping the large count test"
+            exit(0)
+        end
+        comm = Communicator(1, 0)
+        sendbuf = CUDACore.fill(0x01, n)
+        recvbuf = CUDACore.zeros(UInt8, n)
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm)
+        @test Array(recvbuf[1:8]) == fill(0x01, 8)
+        @test Array(recvbuf[end-7:end]) == fill(0x01, 8)
+        NCCL.destroy(comm)
+        """
+    @test run_script(script; timeout=300)
+end
+
+if length(CUDACore.devices()) >= 2
+    @testset "garbage collection during initialization" begin
+        # a task blocked in ncclCommInitRank, waiting for its peer, used to prevent the GC
+        # from running, while the peer was waiting for the GC to finish.
+        #
+        # After warming up, rank 0 enters ncclCommInitRank and blocks there because rank 1
+        # only joins after another task has completed a number of collections. With bindings
+        # that aren't GC-safe the first collection never completes, so rank 1 never joins
+        # and the watchdog kills the script.
+        script = """
+            using CUDACore, NCCL, Test
+            for dev in 0:1
+                device!(dev)
+                NCCL.destroy(NCCL.Communicator(1, 0))
+            end
+
+            id = NCCL.UniqueID()
+            initializing = Threads.Atomic{Bool}(false)
+            collections = Threads.Atomic{Int}(0)
+            t1 = Threads.@spawn begin
+                device!(0)
+                initializing[] = true
+                NCCL.Communicator(2, 0; unique_id=id)
+            end
+            Threads.@spawn begin
+                while !initializing[]
+                    sleep(0.01)
+                end
+                sleep(0.5)
+                for _ in 1:10
+                    GC.gc()
+                    collections[] += 1
+                    sleep(0.01)
+                end
+            end
+            t2 = Threads.@spawn begin
+                while collections[] < 10
+                    sleep(0.01)
+                end
+                @test !istaskdone(t1)
+                # NCCL uses the context current on the OS thread, and the task may have
+                # migrated while sleeping
+                device!(1)
+                NCCL.Communicator(2, 1; unique_id=id)
+            end
+            comms = fetch.([t1, t2])
+            NCCL.destroy.(comms)
+            """
+        @test run_script(script; threads=4, timeout=120)
+    end
+else
+    @info "Skipping the test of garbage collection during initialization, which needs 2 GPUs"
+    @test_skip "garbage collection during initialization (needs 2 GPUs)"
 end
 
 end

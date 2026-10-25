@@ -1,105 +1,141 @@
-using Clang.Generators, NCCL_jll, JuliaFormatter
+# script to parse the NCCL headers and generate Julia wrappers
+#
+# Usage: julia --project=res/wrap res/wrap/wrap.jl
+#
+# The NCCL header is taken from NCCL_jll's artifact, and the CUDA headers it includes from
+# CUDA_SDK_jll. Set `NCCL_INCLUDE_DIR` (or `CUDA_INCLUDE_DIR`) to the `include` directory of
+# another installation to wrap headers that have no JLL yet.
+#
+# To change the types of arguments, add `api.<function>.argtypes` to `generator.toml`.
 
-cd(@__DIR__)
+using Clang
+using Clang.Generators
+using Clang.LibClang
 
-include_dir = normpath(NCCL_jll.artifact_dir, "include")
+using JuliaFormatter
 
-# wrapper generator options
-options = load_options(joinpath(@__DIR__, "generator.toml"))
+using NCCL_jll, CUDA_SDK_jll
 
-# add compiler flags, e.g. "-DXXXXXXXXX"
-args = get_default_args()
-push!(args, "-I$include_dir")
-
-headers = [joinpath(include_dir, "nccl.h")]
-# there is also an experimental `detect_headers` function for auto-detecting top-level headers in the directory
-# headers = detect_headers(clang_dir, args)
-
-# create context
-ctx = create_context(headers, args, options)
-
-function rewriter!(ctx, options)
-    for node in get_nodes(ctx.dag)
-        # remove aliases for function names
-        #
-        # when NVIDIA changes the behavior of an API, they version the function
-        # (`cuFunction_v2`), and sometimes even change function names. To maintain backwards
-        # compatibility, they ship aliases with their headers such that compiled binaries
-        # will keep using the old version, and newly-compiled ones will use the developer's
-        # CUDA version. remove those, since we target multiple CUDA versions.
-        #
-        # remove this if we ever decide to support a single supported version of CUDA.
-        if node isa ExprNode{<:AbstractMacroNodeType}
-            isempty(node.exprs) && continue
-            expr = node.exprs[1]
-            if Meta.isexpr(expr, :const)
-                expr = expr.args[1]
-            end
-            if Meta.isexpr(expr, :(=))
-                lhs, rhs = expr.args
-                if rhs isa Expr && rhs.head == :call
-                    name = string(rhs.args[1])
-                    if endswith(name, "STRUCT_SIZE")
-                        rhs.head = :macrocall
-                        rhs.args[1] = Symbol("@", name)
-                        insert!(rhs.args, 2, nothing)
-                    end
-                end
-                isa(lhs, Symbol) || continue
-                if Meta.isexpr(rhs, :call) && rhs.args[1] in (:__CUDA_API_PTDS, :__CUDA_API_PTSZ)
-                    rhs = rhs.args[2]
-                end
-                isa(rhs, Symbol) || continue
-                lhs, rhs = String(lhs), String(rhs)
-                function get_prefix(str)
-                    # cuFooBar -> cu
-                    isempty(str) && return nothing
-                    islowercase(str[1]) || return nothing
-                    for i in 2:length(str)
-                        if isuppercase(str[i])
-                            return str[1:i-1]
-                        end
-                    end
-                    return nothing
-                end
-                lhs_prefix = get_prefix(lhs)
-                lhs_prefix === nothing && continue
-                rhs_prefix = get_prefix(rhs)
-                if lhs_prefix == rhs_prefix
-                    @debug "Removing function alias: `$expr`"
-                    empty!(node.exprs)
-                end
-            end
-        end
-
-        if Generators.is_function(node) && !Generators.is_variadic_function(node)
-            expr = node.exprs[1]
-            call_expr = expr.args[2].args[1].args[3]    # assumes `@ccall`
-      
-            # rewrite pointer argument types
-            arg_exprs = call_expr.args[1].args[2:end]
-            for expr in arg_exprs
-                if expr.args[2] == :(Ptr{Cvoid}) && expr.args[1] != :scalar
-                    expr.args[2] = :(CuPtr{Cvoid})
-                end
-                if expr.args[1] == :stream
-                    expr.args[2] = :(CUstream)
-                end
-            end
-
-            rettyp = call_expr.args[2]
-            if rettyp isa Symbol && String(rettyp) == "ncclResult_t"
-                node.exprs[1] = Expr(:macrocall, Symbol("@checked"), nothing, expr)
-            end
-        end
+function include_dir(env, jll, path...)
+    if haskey(ENV, env)
+        dir = ENV[env]
+        isdir(dir) || error("$env=$dir does not exist")
+        @info "Using headers from $dir"
+        return dir
+    else
+        jll.is_available() || error("$jll is not available on this platform")
+        return joinpath(jll.artifact_dir, path...)
     end
 end
 
+# Clang.jl does not fail when a header cannot be parsed, it simply drops what it could not
+# understand (for example, without the CUDA headers every `size_t` became a `Cint`).
+function check_diagnostics(ctx)
+    errors = String[]
+    for tu in ctx.trans_units
+        for i in 0:clang_getNumDiagnostics(tu)-1
+            diag = clang_getDiagnostic(tu, i)
+            try
+                severity = clang_getDiagnosticSeverity(diag)
+                msg = Clang._cxstring_to_string(
+                    clang_formatDiagnostic(diag, clang_defaultDiagnosticDisplayOptions()))
+                if severity >= CXDiagnostic_Error
+                    push!(errors, msg)
+                elseif severity == CXDiagnostic_Warning
+                    @warn msg
+                end
+            finally
+                clang_disposeDiagnostic(diag)
+            end
+        end
+    end
+    isempty(errors) || error("Clang failed to parse the headers:\n" * join(errors, "\n"))
+end
 
-# run generator
-build!(ctx, BUILDSTAGE_NO_PRINTING)
-rewriter!(ctx, options)
+function rewriter!(ctx, options)
+    api = get(options, "api", Dict{String,Any}())
+    seen = Set{String}()
+    for node in get_nodes(ctx.dag)
+        Generators.is_function(node) || continue
+        Generators.is_variadic_function(node) && continue
 
-build!(ctx, BUILDSTAGE_PRINTING_ONLY)
+        expr = node.exprs[1]
+        call_expr = expr.args[2].args[1].args[3]    # assumes `use_ccall_macro` is true
 
-format_file(options["general"]["output_file_path"], YASStyle())
+        # NCCL calls can block (initialization, group end, ...), so don't keep the GC waiting
+        expr.args[2].args[1].args[1] = Symbol("@gcsafe_ccall")
+
+        target_expr = call_expr.args[1].args[1]
+        fn = String(target_expr.args[2].value)
+
+        # the profiling entry points (`pnccl*`) share the signature of `nccl*`
+        fn_options = get(api, fn, nothing)
+        if fn_options === nothing && startswith(fn, "pnccl")
+            fn_options = get(api, fn[2:end], nothing)
+        end
+        push!(seen, fn)
+        argtypes = fn_options === nothing ? Dict() : get(fn_options, "argtypes", Dict())
+
+        arg_exprs = call_expr.args[1].args[2:end]
+        for (arg, typ) in argtypes
+            i = parse(Int, arg)
+            i in 1:length(arg_exprs) || error("invalid argtypes for $fn: index $arg is out of bounds")
+            arg_exprs[i].args[2] = Meta.parse(typ)
+        end
+
+        rettyp = call_expr.args[2]
+        if rettyp isa Symbol && String(rettyp) == "ncclResult_t"
+            node.exprs[1] = Expr(:macrocall, Symbol("@checked"), nothing, expr)
+        end
+    end
+
+    # catch typos and functions that disappeared from the header
+    unknown = setdiff(keys(api), seen)
+    isempty(unknown) || error("generator.toml configures unknown functions: $(join(sort!(collect(unknown)), ", "))")
+end
+
+function main()
+    nccl = include_dir("NCCL_INCLUDE_DIR", NCCL_jll, "include")
+    cuda = include_dir("CUDA_INCLUDE_DIR", CUDA_SDK_jll, "cuda", "include")
+
+    options = load_options(joinpath(@__DIR__, "generator.toml"))
+
+    args = get_default_args()
+    # NCCL declares functions without arguments as `f()`, which is only a prototype in C23
+    push!(args, "-std=c2x")
+    push!(args, "-I$nccl")
+    push!(args, "-isystem$cuda")
+
+    ctx = create_context([joinpath(nccl, "nccl.h")], args, options)
+    check_diagnostics(ctx)
+
+    build!(ctx, BUILDSTAGE_NO_PRINTING)
+
+    # Clang.jl also emits the CUDA types NCCL uses; those are aliased in the prologue
+    replace!(get_nodes(ctx.dag)) do node
+        path = normpath(Clang.get_filename(node.cursor))
+        if !startswith(path, normpath(nccl))
+            return ExprNode(node.id, Generators.Skip(), node.cursor, Expr[], node.adj)
+        end
+        return node
+    end
+
+    rewriter!(ctx, options)
+    build!(ctx, BUILDSTAGE_PRINTING_ONLY)
+
+    output_file = options["general"]["output_file_path"]
+    output_data = read(output_file, String)
+    open(output_file, "w") do io
+        println(io, """# This file is automatically generated. Do not edit!
+                       # To re-generate, execute res/wrap/wrap.jl""")
+        println(io)
+        print(io, output_data)
+    end
+    format_file(output_file, YASStyle())
+
+    return
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    cd(main, @__DIR__)
+end

@@ -11,3 +11,101 @@ epilogue_file_path = "./epilogue.jl"
 use_ccall_macro = true
 always_NUL_terminated_string = true
 
+
+# Clang.jl maps every `void*` to `Ptr{Cvoid}`; device pointers need to be `CuPtr`, and
+# pointers that may refer to either memory space `PtrOrCuPtr`.
+# Entries also apply to the profiling entry points (`pnccl*`).
+
+[api.ncclRedOpCreatePreMulSum.argtypes]
+2 = "PtrOrCuPtr{Cvoid}"
+
+[api.ncclMemAlloc.argtypes]
+1 = "Ptr{CuPtr{Cvoid}}"
+
+[api.ncclMemFree.argtypes]
+1 = "CuPtr{Cvoid}"
+
+[api.ncclCommRegister.argtypes]
+2 = "CuPtr{Cvoid}"
+
+[api.ncclCommWindowRegister.argtypes]
+2 = "CuPtr{Cvoid}"
+
+[api.ncclWinGetUserPtr.argtypes]
+3 = "Ptr{CuPtr{Cvoid}}"
+
+[api.ncclBcast.argtypes]
+1 = "CuPtr{Cvoid}"
+
+[api.ncclSend.argtypes]
+1 = "CuPtr{Cvoid}"
+
+[api.ncclRecv.argtypes]
+1 = "CuPtr{Cvoid}"
+
+[api.ncclPutSignal.argtypes]
+1 = "CuPtr{Cvoid}"
+
+[api.ncclReduce.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclReduceConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclBroadcast.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclBroadcastConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAllReduce.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAllReduceConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclReduceScatter.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclReduceScatterConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAllGather.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAllGatherConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAlltoAll.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclAlltoAllConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclGather.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclGatherConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclScatter.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
+
+[api.ncclScatterConfig.argtypes]
+1 = "CuPtr{Cvoid}"
+2 = "CuPtr{Cvoid}"
