@@ -17,8 +17,7 @@ used until then.
 function Send(sendbuf, comm::Communicator; dest::Integer,
               stream::Union{CuStream,Nothing}=nothing)
     check_buffer(comm, sendbuf, "sendbuf")
-    count = length(sendbuf)
-    datatype = ncclDataType_t(eltype(sendbuf))
+    datatype, count = lower_movement(eltype(sendbuf), length(sendbuf))
     dest = Cint(dest)
     check_peer(comm, dest, "dest")
     submit(comm, stream, sendbuf) do sendptr, comm_handle, stream_handle
@@ -46,8 +45,7 @@ used until then.
 function Recv!(recvbuf, comm::Communicator; source::Integer,
                stream::Union{CuStream,Nothing}=nothing)
     check_buffer(comm, recvbuf, "recvbuf")
-    count = length(recvbuf)
-    datatype = ncclDataType_t(eltype(recvbuf))
+    datatype, count = lower_movement(eltype(recvbuf), length(recvbuf))
     source = Cint(source)
     check_peer(comm, source, "source")
     submit(comm, stream, recvbuf) do recvptr, comm_handle, stream_handle

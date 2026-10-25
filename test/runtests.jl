@@ -12,6 +12,7 @@ using NCCL_jll
 @info "best_wrapper: $(NCCL_jll.best_wrapper)"
 
 using NCCL
+using BFloat16s: BFloat16
 @info "NCCL version: $(NCCL.version())"
 
 include("helpers.jl")
@@ -259,6 +260,86 @@ end
     NCCL.destroy(comms)
 end
 
+@testset "element types" begin
+    devs = collect(CUDACore.devices())
+    comms = NCCL.Communicators(devs)
+    n = length(devs)
+    N = 64
+
+    # one buffer per rank, with the contents `f(rank)`
+    onranks(f) = [device!(() -> CuArray(f(r)), dev) for (r, dev) in zip(0:n-1, devs)]
+    fetchall(bufs) = [device!(() -> Array(buf), dev) for (buf, dev) in zip(bufs, devs)]
+
+    function allreduce(f, op)
+        send = onranks(f)
+        recv = onranks(r -> similar(f(r)))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Allreduce!(send[i], recv[i], op, comms[i])
+            end
+        end
+        fetchall(recv)
+    end
+
+    @testset "$T" for T in (Float16, BFloat16)
+        vals(r) = T[r + i % 8 for i in 1:N]
+        expected = sum(vals, 0:n-1)
+        @test all(==(expected), allreduce(vals, +))
+        @test all(==(expected / n), allreduce(vals, NCCL.avg))
+    end
+
+    @testset "integer average" begin
+        vals(r) = Int32[(r + 1) * (isodd(i) ? -1 : 1) for i in 1:N]
+        # sums are divided with truncation towards zero
+        expected = div.(sum(vals, 0:n-1), n)
+        @test all(==(expected), allreduce(vals, NCCL.avg))
+    end
+
+    @testset "Complex{$T}" for T in (Float16, Float32, Float64, BFloat16)
+        # distinct real and imaginary parts, to catch them being mixed up
+        vals(r) = [Complex{T}(r + 1, i) for i in 1:N]
+        expected = sum(vals, 0:n-1)
+        @test all(==(expected), allreduce(vals, +))
+        @test all(==(expected / n), allreduce(vals, NCCL.avg))
+
+        send = onranks(r -> r == 0 ? vals(r) : zero(vals(r)))
+        recv = onranks(r -> zero(vals(r)))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Broadcast!(send[i], recv[i], comms[i]; root=0)
+            end
+        end
+        @test all(==(vals(0)), fetchall(recv))
+
+        send = onranks(vals)
+        recv = onranks(r -> zeros(Complex{T}, n * N))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Allgather!(send[i], recv[i], comms[i])
+            end
+        end
+        @test all(==(reduce(vcat, vals.(0:n-1))), fetchall(recv))
+    end
+
+    @testset "Bool" begin
+        # every combination of values over (up to) 6 ranks
+        vals(r) = Bool[(i >> r) & 1 for i in 0:N-1]
+        @test all(==(reduce(.|, vals.(0:n-1))), allreduce(vals, max))
+        @test all(==(reduce(.&, vals.(0:n-1))), allreduce(vals, min))
+
+        send = onranks(vals)
+        recv = onranks(r -> zeros(Bool, n * N))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Allgather!(send[i], recv[i], comms[i])
+            end
+        end
+        @test all(==(reduce(vcat, vals.(0:n-1))), fetchall(recv))
+    end
+
+    NCCL.destroy(comms)
+end
+
 # keep a stream busy for a while
 function spin(cycles)
     start = CUDACore.clock(UInt64)
@@ -374,6 +455,59 @@ end
         @testset "element types" begin
             @test_throws ArgumentError NCCL.Allreduce!(x, CUDACore.zeros(Float32, 20), +, comm)
             @test_throws ArgumentError NCCL.Broadcast!(x, CUDACore.zeros(Int64, 20), comm)
+
+            function argument_error(f)
+                try
+                    f()
+                catch err
+                    err isa ArgumentError && return err.msg
+                    rethrow()
+                end
+                return nothing
+            end
+
+            # operators
+            @test argument_error(() -> NCCL.Allreduce!(x, -, comm)) !== nothing
+
+            # complex numbers are reduced component-wise
+            z = CUDACore.zeros(ComplexF32, 4)
+            for op in (*, max, min)
+                for f in (() -> NCCL.Allreduce!(z, op, comm),
+                          () -> NCCL.Reduce!(z, op, comm),
+                          () -> NCCL.ReduceScatter!(z, z, op, comm))
+                    msg = argument_error(f)
+                    @test msg !== nothing && occursin("real and imaginary parts", msg)
+                end
+            end
+            NCCL.Allreduce!(z, +, comm)
+            NCCL.Reduce!(z, NCCL.avg, comm)
+
+            # booleans are only reduced with logical operators
+            b = CuArray([true, false, true])
+            for op in (+, *, NCCL.avg)
+                msg = argument_error(() -> NCCL.Allreduce!(b, op, comm))
+                @test msg !== nothing && occursin("logical or", msg)
+            end
+            NCCL.Allreduce!(b, max, comm)
+            NCCL.Allreduce!(b, min, comm)
+            @test Array(b) == [true, false, true]
+
+            # isbits unions, even of supported types, store their type tags separately
+            u8 = CuArray{Union{Int8,UInt8}}([Int8(1), 0x2])
+            msg = argument_error(() -> NCCL.Allreduce!(u8, +, comm))
+            @test msg !== nothing && occursin("isbits", msg)
+            msg = argument_error(() -> NCCL.Broadcast!(u8, comm))
+            @test msg !== nothing && occursin("isbits", msg)
+
+            # other element types can't be reduced
+            i16 = CUDACore.zeros(Int16, 4)
+            for op in (+, max)
+                @test argument_error(() -> NCCL.Allreduce!(i16, op, comm)) !== nothing
+                @test argument_error(() -> NCCL.Reduce!(i16, op, comm)) !== nothing
+                @test argument_error(() -> NCCL.ReduceScatter!(i16, i16, op, comm)) !== nothing
+            end
+            c64 = CUDACore.zeros(Complex{Int64}, 4)
+            @test argument_error(() -> NCCL.Allreduce!(c64, +, comm)) !== nothing
         end
 
         @testset "sizes" begin

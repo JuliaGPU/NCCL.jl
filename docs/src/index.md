@@ -15,6 +15,20 @@ calling NCCL: buffers whose lengths don't fit the operation throw a `DimensionMi
 other invalid arguments (e.g. non-contiguous buffers, mismatched element types, ranks out of
 range, or partially overlapping buffers) an `ArgumentError`.
 
+## Element types
+
+NCCL natively supports buffers of `Int8`, `UInt8`, `Int32`, `UInt32`, `Int64`, `UInt64`,
+`Float16`, `Float32`, `Float64` and `BFloat16` (from BFloat16s.jl) elements, which can be
+used with every operation and reduction operator. Some other element types are passed to
+NCCL as one of these:
+
+- complex numbers with `Float16`, `Float32`, `Float64` or `BFloat16` parts are passed as
+  pairs of real numbers. NCCL then reduces the real and imaginary parts separately, which is
+  only correct for `+` and [`NCCL.avg`](@ref): reducing complex numbers with `*`, `max` or
+  `min` throws an `ArgumentError`.
+- `Bool`s are passed as bytes. They can only be reduced with `max` (logical or) and `min`
+  (logical and), since sums and averages of booleans are not booleans.
+
 ```@meta
 CurrentModule = NCCL
 ```
