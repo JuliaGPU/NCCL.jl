@@ -280,6 +280,135 @@ end
     NCCL.destroy(comms)
 end
 
+@testset "Alltoall!" begin
+    devs = collect(CUDACore.devices())
+    comms = NCCL.Communicators(devs)
+    n = length(devs)
+    B = 3
+
+    # the `k`-th element of the block that rank `src` sends to rank `dst`
+    val(src, dst, k) = Float64(1000src + 10dst + k)
+    sendbuf = [device!(() -> CuArray([val(r, j, k) for k in 1:B, j in 0:n-1]), dev)
+               for (r, dev) in zip(0:n-1, devs)]
+    recvbuf = [device!(() -> CUDACore.fill(-1.0, B, n), dev) for dev in devs]
+    NCCL.group() do
+        for i in 1:n
+            @test NCCL.Alltoall!(sendbuf[i], recvbuf[i], comms[i]) === recvbuf[i]
+        end
+    end
+    for (r, dev) in zip(0:n-1, devs)
+        device!(dev) do
+            @test Array(recvbuf[r+1]) == [val(i, r, k) for k in 1:B, i in 0:n-1]
+        end
+    end
+
+    if n > 1
+        # the buffers can't be divided over the ranks
+        device!(devs[1]) do
+            x = CUDACore.zeros(Float64, B * n + 1)
+            y = CUDACore.zeros(Float64, B * n + 1)
+            @test_throws DimensionMismatch NCCL.Alltoall!(x, y, comms[1])
+        end
+    end
+
+    NCCL.destroy(comms)
+end
+
+@testset "Gather!" begin
+    devs = collect(CUDACore.devices())
+    comms = NCCL.Communicators(devs)
+    n = length(devs)
+    B = 4
+
+    vals(r) = Float64[100r + k for k in 1:B]
+    expected = reduce(vcat, vals.(0:n-1))
+    for root in 0:n-1
+        # the receive buffer is only needed on the root
+        sendbuf = [device!(() -> CuArray(vals(r)), dev) for (r, dev) in zip(0:n-1, devs)]
+        recvbuf = [r == root ? device!(() -> CUDACore.fill(-1.0, n * B), dev) : nothing
+                   for (r, dev) in zip(0:n-1, devs)]
+        NCCL.group() do
+            for i in 1:n
+                @test NCCL.Gather!(sendbuf[i], recvbuf[i], comms[i]; root) === recvbuf[i]
+            end
+        end
+        device!(devs[root+1]) do
+            @test Array(recvbuf[root+1]) == expected
+        end
+
+        # in place: the root sends the part of the receive buffer for itself
+        recvbuf = device!(devs[root+1]) do
+            init = fill(-1.0, n * B)
+            init[root*B+1:(root+1)*B] = vals(root)
+            CuArray(init)
+        end
+        NCCL.group() do
+            for i in 1:n
+                if i - 1 == root
+                    NCCL.Gather!(view(recvbuf, root*B+1:(root+1)*B), recvbuf, comms[i]; root)
+                else
+                    NCCL.Gather!(sendbuf[i], nothing, comms[i]; root)
+                end
+            end
+        end
+        device!(devs[root+1]) do
+            @test Array(recvbuf) == expected
+        end
+    end
+
+    NCCL.destroy(comms)
+end
+
+@testset "Scatter!" begin
+    devs = collect(CUDACore.devices())
+    comms = NCCL.Communicators(devs)
+    n = length(devs)
+    B = 4
+
+    vals(root) = Float64[1000root + k for k in 1:n*B]
+    for root in 0:n-1
+        # the send buffer is only needed on the root
+        sendbuf = [r == root ? device!(() -> CuArray(vals(root)), dev) : nothing
+                   for (r, dev) in zip(0:n-1, devs)]
+        recvbuf = [device!(() -> CUDACore.fill(-1.0, B), dev) for dev in devs]
+        NCCL.group() do
+            for i in 1:n
+                @test NCCL.Scatter!(sendbuf[i], recvbuf[i], comms[i]; root) === recvbuf[i]
+            end
+        end
+        for (r, dev) in zip(0:n-1, devs)
+            device!(dev) do
+                @test Array(recvbuf[r+1]) == vals(root)[r*B+1:(r+1)*B]
+            end
+        end
+
+        # in place: the root receives into its block of the send buffer
+        sendbuf = device!(() -> CuArray(vals(root)), devs[root+1])
+        recvbuf = [device!(() -> CUDACore.fill(-1.0, B), dev) for dev in devs]
+        NCCL.group() do
+            for i in 1:n
+                if i - 1 == root
+                    NCCL.Scatter!(sendbuf, view(sendbuf, root*B+1:(root+1)*B), comms[i];
+                                  root)
+                else
+                    NCCL.Scatter!(nothing, recvbuf[i], comms[i]; root)
+                end
+            end
+        end
+        for (r, dev) in zip(0:n-1, devs)
+            r == root && continue
+            device!(dev) do
+                @test Array(recvbuf[r+1]) == vals(root)[r*B+1:(r+1)*B]
+            end
+        end
+        device!(devs[root+1]) do
+            @test Array(sendbuf) == vals(root)
+        end
+    end
+
+    NCCL.destroy(comms)
+end
+
 @testset "Send/Recv" begin
     devs  = CUDACore.devices()
     comms = NCCL.Communicators(devs)
@@ -519,6 +648,12 @@ end
             @test Array(y)[1:4] == 5:8
             NCCL.Allgather!(reshape(view(m, :, 2:3), 2, 4), view(y, 13:20), comm)
             @test Array(y)[13:20] == 5:12
+            NCCL.Alltoall!(view(m, :, 3), view(y, 1:4), comm)
+            @test Array(y)[1:4] == 9:12
+            NCCL.Gather!(view(m, :, 4), view(y, 5:8), comm)
+            @test Array(y)[5:8] == 13:16
+            NCCL.Scatter!(view(m, :, 5), view(y, 9:12), comm)
+            @test Array(y)[9:12] == 17:20
         end
 
         @testset "non-contiguous views" begin
@@ -528,6 +663,9 @@ end
             @test_throws ArgumentError NCCL.Broadcast!(view(m, 1:2, 2:3), comm)
             @test_throws ArgumentError NCCL.Send(view(m, 2, :), comm; dest=0)
             @test_throws ArgumentError NCCL.Recv!(view(m, 2, :), comm; source=0)
+            @test_throws ArgumentError NCCL.Alltoall!(view(m, 2, :), view(y, 1:5), comm)
+            @test_throws ArgumentError NCCL.Gather!(view(m, 2, :), view(y, 1:5), comm)
+            @test_throws ArgumentError NCCL.Scatter!(view(y, 1:5), view(m, 2, :), comm)
             err = try
                 NCCL.Reduce!(view(m, 1:2, 2:3), +, comm)
             catch err
@@ -604,10 +742,17 @@ end
             NCCL.Broadcast!(i16, comm)
             NCCL.Allgather!(p, p, comm)
             @test Array(p) == [Particle((1, 2, 3), 4)]
+            q = CuArray([Particle((0, 0, 0), 0)])
+            NCCL.Alltoall!(p, q, comm)
+            @test Array(q) == [Particle((1, 2, 3), 4)]
+            NCCL.Gather!(p, q, comm)
+            NCCL.Scatter!(p, q, comm)
 
             # types that aren't isbits, or have no data
             u = CuArray{Union{Int32,Nothing}}([1, nothing])
             msg = argument_error(() -> NCCL.Broadcast!(u, comm))
+            @test msg !== nothing && occursin("isbits", msg)
+            msg = argument_error(() -> NCCL.Alltoall!(u, similar(u), comm))
             @test msg !== nothing && occursin("isbits", msg)
             msg = argument_error(() -> NCCL.Send(CuArray([nothing, nothing]), comm; dest=0))
             @test msg !== nothing && occursin("no data", msg)
@@ -623,7 +768,12 @@ end
             @test err isa ArgumentError
             @test occursin("root", err.msg)
             @test_throws ArgumentError NCCL.Reduce!(x, nothing, +, comm)
+            @test_throws ArgumentError NCCL.Gather!(x, nothing, comm)
+            @test_throws ArgumentError NCCL.Scatter!(nothing, y, comm)
             # and only for the buffers that are ignored there
+            @test_throws ArgumentError NCCL.Gather!(nothing, y, comm)
+            @test_throws ArgumentError NCCL.Scatter!(x, nothing, comm)
+            @test_throws ArgumentError NCCL.Alltoall!(nothing, y, comm)
             @test_throws ArgumentError NCCL.Broadcast!(x, nothing, comm)
             @test_throws ArgumentError NCCL.Reduce!(nothing, y, +, comm)
             @test_throws ArgumentError NCCL.Allreduce!(nothing, y, +, comm)
@@ -635,6 +785,9 @@ end
             @test_throws DimensionMismatch NCCL.Reduce!(x, view(y, 1:10), +, comm)
             @test_throws DimensionMismatch NCCL.Allgather!(x, view(y, 1:10), comm)
             @test_throws DimensionMismatch NCCL.ReduceScatter!(view(x, 1:10), y, +, comm)
+            @test_throws DimensionMismatch NCCL.Alltoall!(x, view(y, 1:10), comm)
+            @test_throws DimensionMismatch NCCL.Gather!(x, view(y, 1:10), comm)
+            @test_throws DimensionMismatch NCCL.Scatter!(view(x, 1:10), y, comm)
         end
 
         @testset "ranks" begin
@@ -643,6 +796,8 @@ end
                 @test_throws ArgumentError NCCL.Reduce!(x, y, +, comm; root)
                 @test_throws ArgumentError NCCL.Broadcast!(nothing, y, comm; root)
                 @test_throws ArgumentError NCCL.Reduce!(x, nothing, +, comm; root)
+                @test_throws ArgumentError NCCL.Gather!(x, y, comm; root)
+                @test_throws ArgumentError NCCL.Scatter!(x, y, comm; root)
             end
             @test_throws ArgumentError NCCL.Send(x, comm; dest=1)
             @test_throws ArgumentError NCCL.Recv!(y, comm; source=-1)
@@ -656,6 +811,18 @@ end
             @test_throws ArgumentError NCCL.Allgather!(view(x, 2:11), view(x, 1:10), comm)
             @test_throws ArgumentError NCCL.ReduceScatter!(view(x, 1:10), view(x, 2:11), +,
                                                            comm)
+            @test_throws ArgumentError NCCL.Gather!(view(x, 2:11), view(x, 1:10), comm)
+            @test_throws ArgumentError NCCL.Scatter!(view(x, 1:10), view(x, 2:11), comm)
+
+            # all-to-all can't be performed in place
+            err = try
+                NCCL.Alltoall!(x, x, comm)
+            catch err
+                err
+            end
+            @test err isa ArgumentError
+            @test occursin("in place", err.msg)
+            @test_throws ArgumentError NCCL.Alltoall!(view(x, 1:10), view(x, 5:14), comm)
 
             # adjacent buffers
             NCCL.Allreduce!(view(x, 1:10), view(x, 11:20), +, comm)
@@ -665,6 +832,10 @@ end
             NCCL.Allreduce!(view(x, 1:10), view(x, 1:10), +, comm)
             NCCL.Allgather!(view(x, 1:10), view(x, 1:10), comm)
             NCCL.ReduceScatter!(view(x, 1:10), view(x, 1:10), +, comm)
+            NCCL.Gather!(view(x, 1:10), view(x, 1:10), comm)
+            NCCL.Scatter!(view(x, 1:10), view(x, 1:10), comm)
+            @test Array(x) == vcat(1:10, 1:10)
+            NCCL.Alltoall!(view(x, 1:10), view(x, 11:20), comm)
             @test Array(x) == vcat(1:10, 1:10)
         end
 
@@ -1026,6 +1197,46 @@ if length(CUDACore.devices()) >= 2
         end
         NCCL.destroy(comm)
         """, 2)
+
+    # an all-to-all exchange, with distinct data for every pair of ranks
+    @test run_ranks("""
+        comm = Communicator(nranks, rank, id)
+        val(src, dst, k) = Int32(1000src + 10dst + k)
+        sendbuf = CuArray([val(rank, j, k) for k in 1:5, j in 0:nranks-1])
+        recvbuf = CUDACore.zeros(Int32, 5, nranks)
+        NCCL.Alltoall!(sendbuf, recvbuf, comm)
+        @test Array(recvbuf) == [val(i, rank, k) for k in 1:5, i in 0:nranks-1]
+        NCCL.destroy(comm)
+        """, nranks)
+
+    # buffers that are only used on the root, with NCCL checking the pointers it is passed
+    # (NCCL only accepts null pointers for the ignored buffers of broadcasts and reductions)
+    @test run_ranks("""
+        ENV["NCCL_CHECK_POINTERS"] = "1"
+        comm = Communicator(nranks, rank, id)
+        root = nranks - 1
+        isroot = rank == root
+        data = CuArray(fill(Float64(rank + 1), 8))
+
+        buf = CUDACore.zeros(Float64, 8)
+        NCCL.Broadcast!(isroot ? data : nothing, buf, comm; root)
+        @test Array(buf) == fill(nranks, 8)
+
+        buf = isroot ? CUDACore.zeros(Float64, 8) : nothing
+        NCCL.Reduce!(data, buf, +, comm; root)
+        isroot && @test Array(buf) == fill(nranks * (nranks + 1) / 2, 8)
+
+        buf = isroot ? CUDACore.zeros(Float64, 8nranks) : nothing
+        NCCL.Gather!(data, buf, comm; root)
+        isroot && @test Array(buf) == repeat(1.0:nranks, inner=8)
+
+        whole = isroot ? CuArray(repeat(1.0:nranks, inner=8)) : nothing
+        buf = CUDACore.zeros(Float64, 8)
+        NCCL.Scatter!(whole, buf, comm; root)
+        @test Array(buf) == fill(rank + 1, 8)
+        @test Array(data) == fill(rank + 1, 8)
+        NCCL.destroy(comm)
+        """, nranks)
 
     # do-block: destroyed on return
     @test run_ranks("""
