@@ -57,23 +57,6 @@ function Base.unsafe_convert(::Type{LibNCCL.ncclComm_t}, comm::Communicator)
     comm.handle
 end
 
-function _buffer_device(buffer)
-    applicable(CUDACore.device, buffer) && return CUDACore.device(buffer)
-    if applicable(parent, buffer)
-        parent_buffer = parent(buffer)
-        parent_buffer === buffer || return _buffer_device(parent_buffer)
-    end
-    throw(ArgumentError("cannot determine the CUDA device for $(typeof(buffer))"))
-end
-
-function _check_buffer_devices(comm_device, buffers...)
-    for buffer in buffers
-        buffer_device = _buffer_device(buffer)
-        buffer_device == comm_device || throw(ArgumentError(
-            "buffer is on device $buffer_device, but the communicator is on device $comm_device"))
-    end
-end
-
 function check_stream(comm::Communicator, stream::CuStream)
     # the per-thread default stream is a different stream on every OS thread, while CUDACore
     # identifies streams by their handle: a task that migrates to another thread would not
@@ -93,7 +76,8 @@ function check_stream(comm::Communicator, stream::CuStream)
 end
 
 # Issue an NCCL operation on `comm`, calling `f` with a raw device pointer for each of
-# `buffers`, followed by the communicator and stream handles.
+# `buffers`, followed by the communicator and stream handles. The buffers have to be
+# validated by the caller (see `check_buffer`).
 #
 # Unless a stream is given, the operation is issued on the task-local stream of the
 # communicator's device. The buffers are converted to pointers while that stream is the
@@ -112,7 +96,6 @@ end
 # arguments are kept alive until then.
 function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
-    _check_buffer_devices(comm.device, buffers...)
     CUDACore.context!(comm.context) do
         # the task's stream can be set to anything with `stream!`
         s = stream === nothing ? CUDACore.stream() : stream
