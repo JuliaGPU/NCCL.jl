@@ -15,10 +15,8 @@ function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
     @assert length(sendbuf) == count
     data_type = ncclDataType_t(eltype(recvbuf))
     _op = ncclRedOp_t(op)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDACore.device!(comm_device) do
-        ncclAllReduce(sendbuf, recvbuf, count, data_type, _op, comm, stream)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        ncclAllReduce(sendptr, recvptr, count, data_type, _op, comm_handle, stream_handle)
     end
     return recvbuf
 end
@@ -52,10 +50,9 @@ function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
                     stream::CuStream=default_device_stream(comm))
     data_type = ncclDataType_t(eltype(recvbuf))
     count = length(recvbuf)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDACore.device!(comm_device) do
-        ncclBroadcast(sendbuf, recvbuf, count, data_type, root, comm, stream)
+    root = Cint(root)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        ncclBroadcast(sendptr, recvptr, count, data_type, root, comm_handle, stream_handle)
     end
     return recvbuf
 end
@@ -82,10 +79,9 @@ function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
     data_type = ncclDataType_t(eltype(recvbuf))
     count = length(recvbuf)
     _op = ncclRedOp_t(op)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDACore.device!(comm_device) do
-        ncclReduce(sendbuf, recvbuf, count, data_type, _op, root, comm, stream)
+    root = Cint(root)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        ncclReduce(sendptr, recvptr, count, data_type, _op, root, comm_handle, stream_handle)
     end
     return recvbuf
 end
@@ -110,10 +106,8 @@ function Allgather!(sendbuf, recvbuf, comm::Communicator;
     data_type = ncclDataType_t(eltype(recvbuf))
     sendcount = length(sendbuf)
     @assert length(recvbuf) == sendcount * size(comm)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDACore.device!(comm_device) do
-        ncclAllGather(sendbuf, recvbuf, sendcount, data_type, comm, stream)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        ncclAllGather(sendptr, recvptr, sendcount, data_type, comm_handle, stream_handle)
     end
     return recvbuf
 end
@@ -137,10 +131,9 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
     @assert length(sendbuf) == recvcount * size(comm)
     data_type = ncclDataType_t(eltype(recvbuf))
     _op = ncclRedOp_t(op)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, sendbuf, recvbuf)
-    CUDACore.device!(comm_device) do
-        ncclReduceScatter(sendbuf, recvbuf, recvcount, data_type, _op, comm, stream)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        ncclReduceScatter(sendptr, recvptr, recvcount, data_type, _op, comm_handle,
+                          stream_handle)
     end
     return recvbuf
 end
