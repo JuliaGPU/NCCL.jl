@@ -129,6 +129,25 @@ end
         @test all(crecv .== answer)
     end
 
+    # the send buffer is only needed on the root
+    for root in 0:length(devs)-1
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(Float64(root + 1), 512))
+            recvbuf[ii] = CUDACore.zeros(Float64, 512)
+        end
+        NCCL.group() do
+            for ii in 1:length(devs)
+                send = ii - 1 == root ? sendbuf[ii] : nothing
+                @test NCCL.Broadcast!(send, recvbuf[ii], comms[ii]; root) === recvbuf[ii]
+            end
+        end
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            @test collect(recvbuf[ii]) == fill(root + 1, 512)
+        end
+    end
+
     NCCL.destroy(comms)
 end
 
@@ -153,6 +172,28 @@ end
         device!(ii - 1)
         crecv = collect(recvbuf[ii])
         @test all(crecv .== answer)
+    end
+
+    # the receive buffer is only needed on the root
+    for root in 0:length(devs)-1
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            sendbuf[ii] = CuArray(fill(Float64(ii), 512))
+            recvbuf[ii] = CUDACore.zeros(Float64, 512)
+        end
+        NCCL.group() do
+            for ii in 1:length(devs)
+                recv = ii - 1 == root ? recvbuf[ii] : nothing
+                @test NCCL.Reduce!(sendbuf[ii], recv, +, comms[ii]; root) === recv
+            end
+        end
+        for (ii, dev) in enumerate(devs)
+            device!(ii - 1)
+            @test collect(sendbuf[ii]) == fill(ii, 512)
+            if ii - 1 == root
+                @test collect(recvbuf[ii]) == fill(sum(1:length(devs)), 512)
+            end
+        end
     end
 
     NCCL.destroy(comms)
@@ -572,6 +613,22 @@ end
             @test msg !== nothing && occursin("no data", msg)
         end
 
+        @testset "root-only buffers" begin
+            # `nothing` is only accepted on other ranks than the root
+            err = try
+                NCCL.Broadcast!(nothing, y, comm)
+            catch err
+                err
+            end
+            @test err isa ArgumentError
+            @test occursin("root", err.msg)
+            @test_throws ArgumentError NCCL.Reduce!(x, nothing, +, comm)
+            # and only for the buffers that are ignored there
+            @test_throws ArgumentError NCCL.Broadcast!(x, nothing, comm)
+            @test_throws ArgumentError NCCL.Reduce!(nothing, y, +, comm)
+            @test_throws ArgumentError NCCL.Allreduce!(nothing, y, +, comm)
+        end
+
         @testset "sizes" begin
             @test_throws DimensionMismatch NCCL.Allreduce!(x, view(y, 1:10), +, comm)
             @test_throws DimensionMismatch NCCL.Broadcast!(x, view(y, 1:10), comm)
@@ -584,6 +641,8 @@ end
             for root in (-1, 1)
                 @test_throws ArgumentError NCCL.Broadcast!(x, y, comm; root)
                 @test_throws ArgumentError NCCL.Reduce!(x, y, +, comm; root)
+                @test_throws ArgumentError NCCL.Broadcast!(nothing, y, comm; root)
+                @test_throws ArgumentError NCCL.Reduce!(x, nothing, +, comm; root)
             end
             @test_throws ArgumentError NCCL.Send(x, comm; dest=1)
             @test_throws ArgumentError NCCL.Recv!(y, comm; source=-1)

@@ -104,6 +104,8 @@ end
 # between the check and the native call that would join the group. For the same reason,
 # callers have to convert scalar arguments (roots, peers) to their C type before calling
 # `submit`: converting a custom `Integer` can yield as well.
+#
+# A buffer can be `nothing` where NCCL accepts a null pointer.
 function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
     CUDACore.context!(comm.context) do
@@ -117,7 +119,7 @@ function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers.
             if state !== nothing && state.owner === current_task()
                 submit_converted(f, comm, s, buffers)
             else
-                managed = [managed_memory(buf) for buf in buffers]
+                managed = [managed_memory(buf) for buf in buffers if buf !== nothing]
                 CUDACore.with_managed(managed; stream=s) do
                     submit_converted(f, comm, s, buffers)
                 end
@@ -127,7 +129,9 @@ function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers.
 end
 
 function submit_converted(f, comm::Communicator, s::CuStream, buffers)
-    cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
+    cbuffers = map(buffers) do buf
+        buf === nothing ? CU_NULL : Base.cconvert(CuPtr{Cvoid}, buf)
+    end
     GC.@preserve buffers cbuffers comm s begin
         ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
         comm_handle = Base.unsafe_convert(ncclComm_t, comm)

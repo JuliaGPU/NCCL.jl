@@ -39,6 +39,18 @@ function check_buffer(comm::Communicator, buf, name)
     return
 end
 
+# Some operations ignore a buffer on all ranks but the root, so other ranks can pass `nothing`
+# instead. Returns whether the buffer was passed.
+function check_root_buffer(comm::Communicator, buf, name, root::Cint)
+    if buf === nothing
+        comm.rank == root && throw(ArgumentError(
+            "$name is required on the root rank, but `nothing` was passed"))
+        return false
+    end
+    check_buffer(comm, buf, name)
+    return true
+end
+
 function check_eltypes(sendbuf, recvbuf)
     if eltype(sendbuf) != eltype(recvbuf)
         throw(ArgumentError(

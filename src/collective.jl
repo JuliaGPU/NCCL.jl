@@ -46,8 +46,9 @@ end
 
 Copy `sendbuf` on rank `root` to `recvbuf` on all ranks. Returns `recvbuf`.
 
-`sendbuf` and `recvbuf` must have the same element type and length; `sendbuf` is only read
-on the root. With a single buffer `sendrecvbuf`, the operation is performed in place.
+`sendbuf` and `recvbuf` must have the same element type and length. `sendbuf` is only read
+on the root: other ranks can pass `nothing` instead. With a single buffer `sendrecvbuf`, the
+operation is performed in place.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -60,15 +61,18 @@ used until then.
 """
 function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
                     stream::Union{CuStream,Nothing}=nothing)
-    check_buffer(comm, sendbuf, "sendbuf")
-    check_buffer(comm, recvbuf, "recvbuf")
-    check_eltypes(sendbuf, recvbuf)
-    check_length(sendbuf, length(recvbuf), "sendbuf")
-    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
     root = Cint(root)
     check_peer(comm, root, "root")
+    check_buffer(comm, recvbuf, "recvbuf")
+    has_sendbuf = check_root_buffer(comm, sendbuf, "sendbuf", root)
+    if has_sendbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(sendbuf, length(recvbuf), "sendbuf")
+    end
+    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
+    # NCCL ignores the send buffer of non-root ranks, and accepts a null pointer there
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
-        check_overlap(sendptr, sendbuf, recvptr, recvbuf)
+        has_sendbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf)
         ncclBroadcast(sendptr, recvptr, count, data_type, root, comm_handle, stream_handle)
     end
     return recvbuf
@@ -89,9 +93,9 @@ Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
 or) and `min` (logical and).
 
-`sendbuf` and `recvbuf` must have the same element type and length; `recvbuf` is only
-written on the root. With a single buffer `sendrecvbuf`, the operation is performed in
-place.
+`sendbuf` and `recvbuf` must have the same element type and length. `recvbuf` is only
+written on the root: other ranks can pass `nothing` instead. With a single buffer
+`sendrecvbuf`, the operation is performed in place.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -104,15 +108,18 @@ used until then.
 """
 function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
                  stream::Union{CuStream,Nothing}=nothing)
-    check_buffer(comm, sendbuf, "sendbuf")
-    check_buffer(comm, recvbuf, "recvbuf")
-    check_eltypes(sendbuf, recvbuf)
-    check_length(sendbuf, length(recvbuf), "sendbuf")
-    data_type, count, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
     root = Cint(root)
     check_peer(comm, root, "root")
+    check_buffer(comm, sendbuf, "sendbuf")
+    has_recvbuf = check_root_buffer(comm, recvbuf, "recvbuf", root)
+    if has_recvbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(recvbuf, length(sendbuf), "recvbuf")
+    end
+    data_type, count, _op = lower_reduction(eltype(sendbuf), length(sendbuf), op)
+    # NCCL ignores the receive buffer of non-root ranks, and accepts a null pointer there
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
-        check_overlap(sendptr, sendbuf, recvptr, recvbuf)
+        has_recvbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf)
         ncclReduce(sendptr, recvptr, count, data_type, _op, root, comm_handle, stream_handle)
     end
     return recvbuf
