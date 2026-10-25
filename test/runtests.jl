@@ -237,6 +237,27 @@ end
         @test collect(recvbuf[ii]) == answer
     end
 
+    # in place, with a single buffer
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        recvbuf[ii] = CuArray(fill(-1.0, length(devs)*512))
+        recvbuf[ii][(ii-1)*512+1:ii*512] .= ii
+    end
+    NCCL.group() do
+        for ii in 1:length(devs)
+            @test NCCL.Allgather!(recvbuf[ii], comms[ii]) === recvbuf[ii]
+        end
+    end
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        @test collect(recvbuf[ii]) == answer
+    end
+    if length(devs) > 1
+        device!(0)
+        @test_throws DimensionMismatch NCCL.Allgather!(CUDACore.zeros(length(devs) + 1),
+                                                       comms[1])
+    end
+
     NCCL.destroy(comms)
 end
 
@@ -275,6 +296,28 @@ end
     for (ii, dev) in enumerate(devs)
         device!(ii - 1)
         @test collect(sendbuf[ii])[2ii-1:2ii] == fill(length(devs)*ii, 2)
+    end
+
+    # in place, with a single buffer: returns this rank's block
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        sendbuf[ii] = CuArray(vec(repeat(collect(1.0:length(devs)), inner=2)))
+    end
+    results = NCCL.group() do
+        map(1:length(devs)) do ii
+            NCCL.ReduceScatter!(sendbuf[ii], +, comms[ii])
+        end
+    end
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        @test length(results[ii]) == 2
+        @test collect(results[ii]) == fill(length(devs)*ii, 2)
+        @test collect(sendbuf[ii])[2ii-1:2ii] == fill(length(devs)*ii, 2)
+    end
+    if length(devs) > 1
+        device!(0)
+        @test_throws DimensionMismatch NCCL.ReduceScatter!(
+            CUDACore.zeros(length(devs) + 1), +, comms[1])
     end
 
     NCCL.destroy(comms)
@@ -836,6 +879,9 @@ end
             NCCL.Scatter!(view(x, 1:10), view(x, 1:10), comm)
             @test Array(x) == vcat(1:10, 1:10)
             NCCL.Alltoall!(view(x, 1:10), view(x, 11:20), comm)
+            @test Array(x) == vcat(1:10, 1:10)
+            @test NCCL.Allgather!(x, comm) === x
+            @test NCCL.ReduceScatter!(x, +, comm) == x
             @test Array(x) == vcat(1:10, 1:10)
         end
 

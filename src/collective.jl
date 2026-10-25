@@ -133,13 +133,16 @@ end
 """
     NCCL.Allgather!(sendbuf, recvbuf, comm::Communicator;
                     stream::Union{CuStream,Nothing} = nothing)
+    NCCL.Allgather!(recvbuf, comm::Communicator; stream)
 
 Concatenate `sendbuf` from each rank, in rank order, into `recvbuf` on all ranks. Returns
 `recvbuf`.
 
 `sendbuf` and `recvbuf` must have the same element type, and `recvbuf` must have
 `nranks(comm)` times as many elements as `sendbuf`. The operation is performed in place
-when `sendbuf` is the part of `recvbuf` that receives the data of this rank.
+when `sendbuf` is the part of `recvbuf` that receives the data of this rank. With only
+`recvbuf`, that part is sent: `recvbuf` then consists of `nranks(comm)` blocks of equal
+length, and on rank `i` (counting from 0) the `i`-th block holds the data to send.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -166,9 +169,22 @@ function Allgather!(sendbuf, recvbuf, comm::Communicator;
     return recvbuf
 end
 
+function Allgather!(recvbuf, comm::Communicator; stream::Union{CuStream,Nothing}=nothing)
+    check_buffer(comm, recvbuf, "recvbuf")
+    sendlen = block_length(comm, recvbuf, "recvbuf")
+    data_type, sendcount = lower_movement(eltype(recvbuf), sendlen)
+    offset = comm.rank * sendlen * Base.elsize(recvbuf)
+    submit(comm, stream, recvbuf) do recvptr, comm_handle, stream_handle
+        ncclAllGather(recvptr + offset, recvptr, sendcount, data_type, comm_handle,
+                      stream_handle)
+    end
+    return recvbuf
+end
+
 """
     NCCL.ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
                         stream::Union{CuStream,Nothing} = nothing)
+    NCCL.ReduceScatter!(sendrecvbuf, op, comm::Communicator; stream) -> view
 
 Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 [`NCCL.avg`](@ref)), and scatter the result over the ranks: `recvbuf` on rank `i` receives
@@ -178,7 +194,10 @@ only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical or) and
 
 `sendbuf` and `recvbuf` must have the same element type, and `sendbuf` must have
 `nranks(comm)` times as many elements as `recvbuf`. The operation is performed in place
-when `recvbuf` is the block of `sendbuf` for this rank.
+when `recvbuf` is the block of `sendbuf` for this rank. With a single buffer `sendrecvbuf`,
+which consists of `nranks(comm)` blocks of equal length, the result for this rank is
+written to its own block, and a view of that block is returned; the other blocks are left
+in an undefined state.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -204,6 +223,19 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
                           stream_handle)
     end
     return recvbuf
+end
+
+function ReduceScatter!(sendrecvbuf, op, comm::Communicator;
+                        stream::Union{CuStream,Nothing}=nothing)
+    check_buffer(comm, sendrecvbuf, "sendrecvbuf")
+    recvlen = block_length(comm, sendrecvbuf, "sendrecvbuf")
+    data_type, recvcount, _op = lower_reduction(eltype(sendrecvbuf), recvlen, op)
+    offset = comm.rank * recvlen * Base.elsize(sendrecvbuf)
+    submit(comm, stream, sendrecvbuf) do sendptr, comm_handle, stream_handle
+        ncclReduceScatter(sendptr, sendptr + offset, recvcount, data_type, _op, comm_handle,
+                          stream_handle)
+    end
+    return view(sendrecvbuf, comm.rank*recvlen+1:(comm.rank+1)*recvlen)
 end
 
 """
