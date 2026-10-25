@@ -265,6 +265,35 @@ end
     end
 end
 
+@testset "errors" begin
+    function nccl_error(f)
+        try
+            f()
+        catch err
+            err
+        end
+    end
+
+    # sending to or receiving from oneself without a matching operation is invalid, which
+    # NCCL reports (with different messages, so that the second one is new to NCCL.jl)
+    comm = Communicator(1, 0)
+    buf = CUDACore.ones(Float64, 4)
+    err = nccl_error(() -> NCCL.Recv!(buf, comm; source=0))
+    @test err isa NCCL.NCCLError
+    err = nccl_error(() -> NCCL.Send(buf, comm; dest=0))
+    @test err isa NCCL.NCCLError
+    @test !isempty(err.msg)
+    msg = sprint(showerror, err)
+    @test occursin(string(err.code), msg)
+    @test occursin(err.msg, msg)
+    NCCL.destroy(comm)
+
+    # an error NCCL didn't log must not carry the message of the previous one
+    err = NCCL.NCCLError(err.code)
+    @test isempty(err.msg)
+    @test !occursin('\n', sprint(showerror, err))
+end
+
 @testset "large count" begin
     # counts used to be passed as `Cint`, and failed beyond `typemax(Cint)`
     script = """

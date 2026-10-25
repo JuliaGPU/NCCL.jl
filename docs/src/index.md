@@ -19,6 +19,12 @@ NCCL_jll.is_available
 version()
 ```
 
+## Errors
+
+```@docs
+NCCLError
+```
+
 ## Communicators
 
 ```@docs
