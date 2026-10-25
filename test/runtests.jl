@@ -17,6 +17,16 @@ using BFloat16s: BFloat16
 
 include("helpers.jl")
 
+# an isbits type that NCCL doesn't support (with padding after `id`)
+struct Particle
+    position::NTuple{3,Float32}
+    id::Int16
+end
+
+# a type whose values are padded in arrays: 3 bytes, stored every 4 bytes
+primitive type UInt24 24 end
+UInt24(x::Integer) = Core.Intrinsics.trunc_int(UInt24, UInt32(x))
+
 @testset "NCCL" begin
 
 @testset "Communicator" begin
@@ -337,6 +347,43 @@ end
         @test all(==(reduce(vcat, vals.(0:n-1))), fetchall(recv))
     end
 
+    # other isbits types are copied as bytes
+    @testset "$T" for (T, val) in ((Int16, (r, i) -> Int16(-1000r - i)),
+                                   (Char, (r, i) -> 'α' + 10r + i),
+                                   (NTuple{3,UInt8}, (r, i) -> (UInt8(r), UInt8(i), 0xff)),
+                                   (Particle, (r, i) -> Particle((r, i, -r), i)),
+                                   (UInt24, (r, i) -> UInt24(65536r + i)))
+        vals(r) = T[val(r, i) for i in 1:N]
+
+        send = onranks(r -> r == 1 % n ? vals(r) : vals(n))
+        recv = onranks(r -> vals(n))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Broadcast!(send[i], recv[i], comms[i]; root=1 % n)
+            end
+        end
+        @test all(==(vals(1 % n)), fetchall(recv))
+
+        send = onranks(vals)
+        recv = onranks(r -> repeat(vals(n), n))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Allgather!(send[i], recv[i], comms[i])
+            end
+        end
+        @test all(==(reduce(vcat, vals.(0:n-1))), fetchall(recv))
+
+        send = onranks(vals)
+        recv = onranks(r -> vals(n))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Send(send[i], comms[i]; dest=mod(i, n))
+                NCCL.Recv!(recv[i], comms[i]; source=mod(i - 2, n))
+            end
+        end
+        @test fetchall(recv) == [vals(mod(r - 1, n)) for r in 0:n-1]
+    end
+
     NCCL.destroy(comms)
 end
 
@@ -508,6 +555,21 @@ end
             end
             c64 = CUDACore.zeros(Complex{Int64}, 4)
             @test argument_error(() -> NCCL.Allreduce!(c64, +, comm)) !== nothing
+            p = CuArray([Particle((1, 2, 3), 4)])
+            msg = argument_error(() -> NCCL.Allreduce!(p, +, comm))
+            @test msg !== nothing && occursin("can only be copied", msg)
+
+            # but they can be copied
+            NCCL.Broadcast!(i16, comm)
+            NCCL.Allgather!(p, p, comm)
+            @test Array(p) == [Particle((1, 2, 3), 4)]
+
+            # types that aren't isbits, or have no data
+            u = CuArray{Union{Int32,Nothing}}([1, nothing])
+            msg = argument_error(() -> NCCL.Broadcast!(u, comm))
+            @test msg !== nothing && occursin("isbits", msg)
+            msg = argument_error(() -> NCCL.Send(CuArray([nothing, nothing]), comm; dest=0))
+            @test msg !== nothing && occursin("no data", msg)
         end
 
         @testset "sizes" begin
@@ -883,6 +945,28 @@ if length(CUDACore.devices()) >= 2
         NCCL.destroy(comm)
         @test_throws InvalidStateException NCCL.Allreduce!(buf, +, comm)
         """, nranks)
+
+    # a struct, sent as bytes between processes
+    @test run_ranks("""
+        struct Particle
+            position::NTuple{3,Float32}
+            id::Int16
+        end
+        comm = Communicator(nranks, rank, id)
+        particles(r) = [Particle((r, i, -i), i) for i in 1:100]
+        if rank == 0
+            NCCL.Send(CuArray(particles(1)), comm; dest=1)
+            buf = CuArray(particles(0))
+            NCCL.Recv!(buf, comm; source=1)
+            @test Array(buf) == particles(2)
+        elseif rank == 1
+            buf = CuArray(particles(0))
+            NCCL.Recv!(buf, comm; source=0)
+            @test Array(buf) == particles(1)
+            NCCL.Send(CuArray(particles(2)), comm; dest=0)
+        end
+        NCCL.destroy(comm)
+        """, 2)
 
     # do-block: destroyed on return
     @test run_ranks("""

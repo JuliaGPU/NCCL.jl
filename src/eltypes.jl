@@ -2,10 +2,11 @@
 #
 # NCCL supports a fixed set of element types. Buffers of other element types are passed to
 # NCCL as a buffer of one of these, with a different element count: complex numbers as
-# pairs of real numbers, and booleans as bytes. How an element type is lowered depends on
-# the operation: data movement (broadcasts, gathers, sends and receives) only copies
-# values, while a reduction has to combine them the way Julia would, which restricts the
-# operators that can be used with lowered types.
+# pairs of real numbers, booleans as bytes, and any other isbits type as the bytes of its
+# values. How an element type is lowered depends on the operation: data movement
+# (broadcasts, gathers, sends and receives) only copies values, while a reduction has to
+# combine them the way Julia would, which restricts the operators and types that can be
+# used.
 
 const NativeFloat = Union{Float16,Float32,Float64,BFloat16}
 const NativeType = Union{Int8,UInt8,Int32,UInt32,Int64,UInt64,NativeFloat}
@@ -59,8 +60,15 @@ logical(op) = reduction_op(op) in (ncclMax, ncclMin)
 movement_type(::Type{T}) where {T<:NativeType} = (ncclDataType_t(T), 1)
 movement_type(::Type{Complex{T}}) where {T<:NativeFloat} = (ncclDataType_t(T), 2)
 movement_type(::Type{Bool}) = (ncclUint8, 1)
-movement_type(::Type{T}) where {T} = throw(ArgumentError(
-    "unsupported element type $T; NCCL operations support $supported_types"))
+function movement_type(::Type{T}) where {T}
+    # (`T` is an isbits type, see `check_isbits`)
+    # values of a zero-size type carry no data, and arrays of them don't have memory that
+    # NCCL could access; rather than silently doing nothing, reject them
+    sizeof(T) == 0 && throw(ArgumentError(
+        "unsupported element type $T; values of this type have no data to communicate"))
+    # the stride of the elements in the array, including any padding
+    return ncclUint8, Base.aligned_sizeof(T)
+end
 
 # The NCCL element type and the number of its elements per element of type `T`, to reduce
 # values of type `T` with `op`.
@@ -76,9 +84,7 @@ function reduction_type(::Type{Bool}, op)
     return ncclUint8, 1
 end
 reduction_type(::Type{T}, op) where {T} = throw(ArgumentError(
-    "cannot reduce $T values; reductions support $supported_types"))
-
-const supported_types = "Int8, UInt8, Int32, UInt32, Int64, UInt64, Float16, Float32, Float64, BFloat16, Bool, and Complex numbers of these floating-point types"
+    "cannot reduce $T values; reductions support Int8, UInt8, Int32, UInt32, Int64, UInt64, Float16, Float32, Float64, BFloat16, Bool, and Complex numbers of these floating-point types (other isbits types can only be copied)"))
 
 # Arrays only store isbits values inline, so that NCCL can access them as a range of memory.
 # (isbits unions are stored inline too, but with their type tags in a separate part of the

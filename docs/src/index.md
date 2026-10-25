@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = NCCL
+```
+
 # NCCL.jl
 
  A Julia wrapper for the [NVIDIA Collective Communications Library (NCCL)](https://developer.nvidia.com/nccl).
@@ -28,10 +32,13 @@ NCCL as one of these:
   `min` throws an `ArgumentError`.
 - `Bool`s are passed as bytes. They can only be reduced with `max` (logical or) and `min`
   (logical and), since sums and averages of booleans are not booleans.
+- other `isbits` types (e.g. `Int16`, `Char`, tuples or immutable structs) are passed as
+  bytes, and can only be copied: they are supported by data movement operations
+  ([`Broadcast!`](@ref), [`Allgather!`](@ref), [`Send`](@ref) and [`Recv!`](@ref)), but not
+  by reductions. Padding bytes in such values are copied as well.
 
-```@meta
-CurrentModule = NCCL
-```
+Other element types, i.e. types that aren't `isbits` (including `isbits` unions), and types
+of size zero (e.g. `Nothing`), are not supported.
 
 ## Library
 
