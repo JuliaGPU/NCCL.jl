@@ -31,7 +31,8 @@ end
     NCCL.Recv!(recvbuf, comm::Communicator; source::Integer,
                stream::Union{CuStream,Nothing} = nothing)
 
-Receive the data that rank `source` sends with [`NCCL.Send`](@ref) into `recvbuf`.
+Receive the data that rank `source` sends with [`NCCL.Send`](@ref) into `recvbuf`. Returns
+`recvbuf`.
 
 The buffer must be stored contiguously in memory of the device of `comm`: a `CuArray`, or a
 contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -52,5 +53,5 @@ function Recv!(recvbuf, comm::Communicator; source::Integer,
     submit(comm, stream, recvbuf) do recvptr, comm_handle, stream_handle
         ncclRecv(recvptr, count, datatype, source, comm_handle, stream_handle)
     end
-    return recvbuf.data
+    return recvbuf
 end

@@ -245,8 +245,8 @@ end
             comm = comms[ii]
             dest = mod(NCCL.rank(comm)+1, NCCL.nranks(comm))
             source = mod(NCCL.rank(comm)-1, NCCL.nranks(comm))
-            NCCL.Send(sendbuf[ii], comm; dest)
-            NCCL.Recv!(recvbuf[ii], comm; source)
+            @test NCCL.Send(sendbuf[ii], comm; dest) === nothing
+            @test NCCL.Recv!(recvbuf[ii], comm; source) === recvbuf[ii]
         end
     end
     for (ii, dev) in enumerate(devs)
