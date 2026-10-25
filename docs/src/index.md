@@ -6,7 +6,9 @@
 
 Buffers passed to collective and point-to-point operations must belong to the device
 associated with the communicator. Operations temporarily activate that device, and restore
-the previously active device when they return.
+the previously active device when they return. They are issued on the `stream` keyword
+argument, which defaults to the task-local stream of the communicator's device
+(`CUDACore.stream()` while that device is active).
 
 ```@meta
 CurrentModule = NCCL
@@ -30,12 +32,13 @@ NCCLError
 ```@docs
 Communicator
 Communicators
-device(comm::Communicator)
-size(comm::Communicator)
+UniqueID
+Config
 rank(comm::Communicator)
+nranks(comm::Communicator)
+device(comm::Communicator)
 destroy
 abort
-default_device_stream
 ```
 
 ## Groups

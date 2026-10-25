@@ -1,14 +1,6 @@
 # Communicator
 export Communicator
 
-const UniqueID = LibNCCL.ncclUniqueId
-
-function UniqueID()
-    r = Ref{UniqueID}()
-    ncclGetUniqueId(r)
-    return r[]
-end
-
 """
     NCCL.Communicator
 
@@ -23,11 +15,33 @@ or use the do-block form of the constructors. A communicator that is never destr
 its resources until the process exits.
 
 After a communicator has been destroyed or aborted, it is closed (see `isopen`), and using
-it throws an `InvalidStateException`.
+it throws an `InvalidStateException`. Its [`NCCL.rank`](@ref), [`NCCL.nranks`](@ref) and
+[`NCCL.device`](@ref) remain available.
+
+Communicators are always blocking; see [`NCCL.Config`](@ref).
 """
 mutable struct Communicator
     handle::ncclComm_t      # C_NULL once destroyed or aborted
+    const device::CuDevice
+    const context::CuContext
+    const rank::Int
+    const nranks::Int
+    # NCCL keeps pointers to the strings of the configuration
+    const config::Union{Config,Nothing}
+
+    function Communicator(handle::ncclComm_t, dev::CuDevice, rank::Integer, nranks::Integer,
+                          config::Union{Config,Nothing})
+        comm = new(handle, dev, CUDACore.context(dev), rank, nranks, config)
+        @lock open_lock push!(open_communicators, comm)
+        return comm
+    end
 end
+
+# NCCL uses the configuration of a communicator (see above) until it is destroyed, which
+# can be after the Julia object would have been collected, as communicators are only freed
+# explicitly. Open communicators are therefore kept alive here.
+const open_communicators = Base.IdSet{Communicator}()
+const open_lock = Threads.SpinLock()
 
 Base.isopen(comm::Communicator) = comm.handle != C_NULL
 
@@ -69,16 +83,19 @@ end
 # between the check and the native call that would join the group. For the same reason,
 # callers have to convert scalar arguments (roots, peers) to their C type before calling
 # `submit`: converting a custom `Integer` can yield as well.
-function submit(f, comm::Communicator, stream::CuStream, buffers...)
+#
+# Unless a stream is given, the operation is issued on the task-local stream of the
+# communicator's device.
+function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
-    comm_device = device(comm)
-    _check_buffer_devices(comm_device, buffers...)
-    CUDACore.device!(comm_device) do
+    _check_buffer_devices(comm.device, buffers...)
+    CUDACore.context!(comm.context) do
+        s = stream === nothing ? CUDACore.stream() : stream
         cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
-        GC.@preserve buffers cbuffers comm stream begin
+        GC.@preserve buffers cbuffers comm s begin
             ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
             comm_handle = Base.unsafe_convert(ncclComm_t, comm)
-            stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, stream)
+            stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
             check_group_owner()
             f(ptrs..., comm_handle, stream_handle)
         end
@@ -104,6 +121,7 @@ function release(f, comm::Communicator)
     handle = comm.handle
     comm.handle = C_NULL
     f(handle)
+    @lock open_lock delete!(open_communicators, comm)
     return
 end
 
@@ -209,132 +227,182 @@ end
 
 ## construction
 
-"""
-    NCCL.Communicator(nranks, rank; [unique_id]) :: Communicator
-    NCCL.Communicator(f, nranks, rank; [unique_id])
+# Abort the communicators that NCCL allocated before their initialization failed, as NCCL
+# leaves that to the user. The error that caused the failure is more informative than one
+# from aborting, so the latter is ignored.
+function abort_failed(handles)
+    # inside a group, aborting would be deferred until the group ends, when NCCL discards
+    # it together with the rest of the failed group, so such communicators are leaked
+    group_state() === nothing || return
+    for handle in handles
+        handle == C_NULL && continue
+        try
+            ncclCommAbort(handle)
+        catch
+        end
+    end
+end
 
-Create a single communicator for use in a multi-threaded or multi-process
-environment. `nranks` is the number of ranks in the communicator, and `rank`
-is the 0-based index of the current rank. `unique_id` is an optional unique
-identifier for the communicator.
+function check_rank(nranks, rank)
+    nranks >= 1 || throw(ArgumentError("nranks must be positive, got $nranks"))
+    0 <= rank < nranks || throw(ArgumentError("rank must be in [0, $nranks), got $rank"))
+    return
+end
+
+"""
+    NCCL.Communicator(nranks, rank, id::UniqueID;
+                      device=CUDACore.device(), config=nothing) :: Communicator
+    NCCL.Communicator(f, nranks, rank, id::UniqueID; device, config)
+
+Create the communicator for rank `rank` (0-based) of a communicator with `nranks` ranks, on
+`device`. All ranks have to call this with the same `nranks` and the same `id`, which one
+of them created with [`NCCL.UniqueID()`](@ref) and shared with the others, e.g. using MPI
+or a file. Each rank uses a different device. The call blocks until all ranks have joined,
+so the ranks have to be created concurrently: from different processes, or from different
+tasks running on different threads.
+
+`config` can be an [`NCCL.Config`](@ref) to configure the communicator.
+
+If initialization fails, the local communicator is aborted before the error is thrown. Inside
+an [`NCCL.group`](@ref), initialization only happens when the group ends; if it fails
+there, the error is thrown by `NCCL.group`, and the communicator has to be aborted.
 
 With the do-block form, the communicator is passed to `f`, and destroyed when `f` returns
 (see [`NCCL.destroy`](@ref)). If `f` throws, the communicator is aborted instead (see
 [`NCCL.abort`](@ref)) and the exception is rethrown. This only cleans up the local
-communicator: the other ranks still need to abort theirs, or they may block.
+communicator: it does not recover from the error, and the other ranks need to abort their
+communicators as well, or they may block.
 
 # Examples
-```
-comm = Communicator(length(CUDACore.devices()), id, myid())
-# this blocks until all other ranks have connected
+```julia
+# on every rank, e.g. a process using a single GPU
+id = rank == 0 ? NCCL.UniqueID() : receive_id_from_rank0()
+Communicator(nranks, rank, id) do comm
+    NCCL.Allreduce!(buf, +, comm)
+end
 ```
 
 # External links
-- [`ncclCommInitRank`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclCommInitRank)
+- [`ncclCommInitRankConfig`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcomminitrankconfig)
+- [Creating a communicator](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/communicators.html)
 """
-function Communicator(nranks::Integer, rank::Integer;
-                      unique_id::UniqueID=UniqueID())
-    0 <= rank < nranks || throw(ArgumentError("rank must be in [0, nranks)"))
-    handle_ref = Ref{ncclComm_t}(C_NULL)
+function Communicator(nranks::Integer, rank::Integer, id::UniqueID;
+                      device::Union{CuDevice,Integer}=CUDACore.device(),
+                      config::Union{Config,Nothing}=nothing)
+    device isa CuDevice || (device = CuDevice(device))
     nranks = Cint(nranks)
     rank = Cint(rank)
-    check_group_owner()
-    ncclCommInitRank(handle_ref, nranks, unique_id, rank)
-    return Communicator(handle_ref[])
+    check_rank(nranks, rank)
+    check_blocking()
+    config = something(config, Config())
+    raw_config = Ref(ncclConfig_t(config))
+    handle_ref = Ref{ncclComm_t}(C_NULL)
+    GC.@preserve config try
+        CUDACore.device!(device) do
+            check_group_owner()
+            ncclCommInitRankConfig(handle_ref, nranks, id, rank, raw_config)
+        end
+    catch
+        abort_failed((handle_ref[],))
+        rethrow()
+    end
+    return Communicator(handle_ref[], device, rank, nranks, config)
 end
 
-function Communicator(f, nranks::Integer, rank::Integer; kwargs...)
-    with_communicators(f, Communicator(nranks, rank; kwargs...))
+function Communicator(f, nranks::Integer, rank::Integer, id::UniqueID; kwargs...)
+    with_communicators(f, Communicator(nranks, rank, id; kwargs...))
 end
 
 """
-    NCCL.Communicators(devices) :: Vector{Communicator}
-    NCCL.Communicators(f, devices)
+    NCCL.Communicators(devices; config=nothing) :: Vector{Communicator}
+    NCCL.Communicators(f, devices; config=nothing)
 
-Construct and initialize a clique of NCCL Communicators over the devices
-on a single host.
+Create a communicator with one rank per device in `devices`, all driven from the current
+task. Rank `i-1` uses `devices[i]`; the devices must be distinct. `devices` can contain
+`CuDevice`s or device ordinals.
 
-`devices` can either be a collection of identifiers, or `CuDevice`s.
+`config` can be an [`NCCL.Config`](@ref) to configure the communicator. Without it, this
+uses `ncclCommInitAll`, otherwise one `ncclCommInitRankConfig` per device in a group.
 
-Destroy the communicators together with `NCCL.destroy(comms)`, or use the do-block form,
-which destroys them when `f` returns, and aborts them if it throws (see
-[`NCCL.Communicator`](@ref)).
+Operations on several of these communicators have to be issued in an [`NCCL.group`](@ref),
+or the first one blocks waiting for the others. Destroy the communicators together, with
+`NCCL.destroy(comms)`, or use the do-block form, which destroys them when `f` returns, and
+aborts them if it throws (see [`NCCL.Communicator`](@ref)).
 
 # Examples
-```
-comms = NCCL.Communicators(CUDACore.devices())
+```julia
+NCCL.Communicators(CUDACore.devices()) do comms
+    NCCL.group() do
+        for (comm, buf) in zip(comms, bufs)
+            NCCL.Allreduce!(buf, +, comm)
+        end
+    end
+end
 ```
 
 # External links
 - [`ncclCommInitAll`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcomminitall)
+- [`ncclCommInitRankConfig`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcomminitrankconfig)
 """
-function Communicators(deviceids::Vector{Cint})
-    ndev    = length(deviceids)
-    comms   = Vector{ncclComm_t}(undef, ndev)
-    check_group_owner()
-    ncclCommInitAll(comms, ndev, deviceids)
-    return map(Communicator, comms)
-end
-function Communicators(deviceids::AbstractVector{<:Integer})
-    Communicators(Cint[d for d in deviceids])
-end
-function Communicators(devices)
-    Communicators(Cint[deviceid(d) for d in devices])
+function Communicators(devices; config::Union{Config,Nothing}=nothing)
+    devs = CuDevice[dev isa CuDevice ? dev : CuDevice(dev) for dev in devices]
+    isempty(devs) && throw(ArgumentError("no devices given"))
+    allunique(map(deviceid, devs)) || throw(ArgumentError("devices must be distinct"))
+    check_blocking()
+    ndev = length(devs)
+    handles = fill(ncclComm_t(C_NULL), ndev)
+    GC.@preserve config handles try
+        if config === nothing
+            check_group_owner()
+            ncclCommInitAll(handles, ndev, Cint[deviceid(dev) for dev in devs])
+        else
+            id = UniqueID()
+            raw_config = Ref(ncclConfig_t(config))
+            group() do
+                for (i, dev) in enumerate(devs)
+                    CUDACore.device!(dev) do
+                        ncclCommInitRankConfig(pointer(handles, i), ndev, id, i-1, raw_config)
+                    end
+                end
+            end
+        end
+    catch
+        abort_failed(handles)
+        rethrow()
+    end
+    return [Communicator(handles[i], devs[i], i-1, ndev, config) for i in 1:ndev]
 end
 
-Communicators(f, devices) = with_communicators(f, Communicators(devices))
+function Communicators(f, devices; kwargs...)
+    with_communicators(f, Communicators(devices; kwargs...))
+end
+
+
+## properties
 
 """
     NCCL.device(comm::Communicator) :: CuDevice
 
-The device of the communicator
-
-# External Links
-- [`ncclCommCuDevice`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcudevice)
+The device of the communicator.
 """
-function device(comm::Communicator)
-    dev_ref = Ref{Cint}(C_NULL)
-    ncclCommCuDevice(comm, dev_ref)
-    return CuDevice(dev_ref[])
-end
+device(comm::Communicator) = comm.device
 
 """
-    NCCL.size(comm::Communicator) :: Int
+    NCCL.nranks(comm::Communicator) :: Int
 
-The number of communicators in the clique.
-
-# External links
-- [`ncclCommCount`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommcount)
+The number of ranks in the communicator.
 """
-function size(comm::Communicator)
-    size_ref = Ref{Cint}(C_NULL)
-    ncclCommCount(comm, size_ref)
-    return Int(size_ref[])
-end
+nranks(comm::Communicator) = comm.nranks
 
 """
     NCCL.rank(comm::Communicator) :: Int
 
-The 0-based index of the communicator in the clique.
-
-# External links
-- [`ncclCommUserRank`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommuserrank)
+The 0-based index of this rank in the communicator.
 """
-function rank(comm::Communicator)
-    rank_ref = Ref{Cint}(C_NULL)
-    ncclCommUserRank(comm, rank_ref)
-    return Int(rank_ref[])
-end
+rank(comm::Communicator) = comm.rank
 
-"""
-    NCCL.default_device_stream(comm::Communicator) :: CuStream
-
-Get the default stream for device `devid`, or the device corresponding to
-communicator `comm`.
-"""
-function default_device_stream(comm::Communicator)
-    dev = device(comm)
-    device!(dev) do
-        stream()
-    end
+function Base.show(io::IO, comm::Communicator)
+    print(io, "NCCL.Communicator(rank ", comm.rank, " of ", comm.nranks, " on ", comm.device)
+    isopen(comm) || print(io, ", closed")
+    print(io, ")")
 end

@@ -7,8 +7,11 @@ using .LibNCCL
 
 include("base.jl")
 include("group.jl")
+include("config.jl")
 include("communicator.jl")
 include("pointtopoint.jl")
 include("collective.jl")
+
+__init__() = force_blocking()
 
 end

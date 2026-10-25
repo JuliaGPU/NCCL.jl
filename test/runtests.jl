@@ -14,23 +14,7 @@ using NCCL_jll
 using NCCL
 @info "NCCL version: $(NCCL.version())"
 
-# Run a Julia script in a separate process, killing it if it doesn't finish in time, so
-# that a deadlock fails the test instead of hanging the test suite.
-function run_script(script; threads=1, timeout=300)
-    cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) --threads=$threads -e $script`
-    output = Pipe()
-    proc = run(pipeline(ignorestatus(cmd); stdout=output, stderr=output); wait=false)
-    close(output.in)
-    reader = @async read(output, String)
-    if timedwait(() -> process_exited(proc), timeout) === :timed_out
-        @error "Script did not finish within $timeout seconds, killing it"
-        kill(proc, Base.SIGKILL)
-    end
-    wait(proc)
-    log = fetch(reader)
-    success(proc) || println(log)
-    return success(proc)
-end
+include("helpers.jl")
 
 @testset "NCCL" begin
 
@@ -40,12 +24,16 @@ end
     for (i,dev) in enumerate(CUDACore.devices())
         @test NCCL.rank(comms[i]) == i-1
         @test NCCL.device(comms[i]) == dev
-        @test NCCL.size(comms[i]) == length(CUDACore.devices())
+        @test NCCL.nranks(comms[i]) == length(CUDACore.devices())
     end
 
     # single communicator (with nranks=1 or this would block)
-    comm  = Communicator(1, 0)
-    @test NCCL.device(comm) == CuDevice(0)
+    comm = Communicator(1, 0, NCCL.UniqueID())
+    @test NCCL.device(comm) == CUDACore.device()
+    @test NCCL.rank(comm) == 0
+    @test NCCL.nranks(comm) == 1
+    @test isopen(comm)
+    @test occursin("rank 0 of 1", sprint(show, comm))
 
     NCCL.destroy(comms)
     NCCL.destroy(comm)
@@ -224,8 +212,8 @@ end
     NCCL.group() do
         for ii in 1:length(devs)
             comm = comms[ii]
-            dest = mod(NCCL.rank(comm)+1, NCCL.size(comm))
-            source = mod(NCCL.rank(comm)-1, NCCL.size(comm))
+            dest = mod(NCCL.rank(comm)+1, NCCL.nranks(comm))
+            source = mod(NCCL.rank(comm)-1, NCCL.nranks(comm))
             NCCL.Send(sendbuf[ii], comm; dest)
             NCCL.Recv!(recvbuf[ii], comm; source)
         end
@@ -276,7 +264,7 @@ end
 
     # sending to or receiving from oneself without a matching operation is invalid, which
     # NCCL reports (with different messages, so that the second one is new to NCCL.jl)
-    comm = Communicator(1, 0)
+    comm = Communicator(1, 0, NCCL.UniqueID())
     buf = CUDACore.ones(Float64, 4)
     err = nccl_error(() -> NCCL.Recv!(buf, comm; source=0))
     @test err isa NCCL.NCCLError
@@ -355,6 +343,26 @@ end
             @test !any(isopen, comms)
         end
 
+        @testset "construction" begin
+            # device ordinals
+            comms = NCCL.Communicators(0:length(devs)-1)
+            @test NCCL.device.(comms) == devs
+            NCCL.destroy(comms)
+
+            # with a configuration, using grouped ncclCommInitRankConfig
+            config = NCCL.Config(comm_name="clique", max_ctas=4)
+            comms = NCCL.Communicators(reverse(devs); config)
+            @test NCCL.device.(comms) == reverse(devs)
+            @test NCCL.rank.(comms) == 0:length(devs)-1
+            @test all(==(length(devs)), NCCL.nranks.(comms))
+            @test allreduce(reverse(comms))
+            NCCL.destroy(comms)
+
+            @test_throws ArgumentError NCCL.Communicators([devs[1], devs[1]])
+            @test_throws ArgumentError NCCL.Communicators([0, 0]; config)
+            @test_throws ArgumentError NCCL.Communicators(CuDevice[])
+        end
+
         @testset "abort" begin
             comms = NCCL.Communicators(devs)
             @test allreduce(comms)
@@ -412,6 +420,190 @@ end
     @test run_script(script; timeout=300)
 end
 
+@testset "UniqueID" begin
+    id = NCCL.UniqueID()
+    @test isbitstype(NCCL.UniqueID)
+    bytes = Vector{UInt8}(id)
+    @test length(bytes) == 128
+    @test NCCL.UniqueID(bytes) == id
+    @test NCCL.UniqueID(view(bytes, :)) == id
+    @test NCCL.UniqueID(bytes) != NCCL.UniqueID()
+    @test_throws ArgumentError NCCL.UniqueID(bytes[1:127])
+    @test_throws ArgumentError NCCL.UniqueID([bytes; 0x00])
+    @test occursin(bytes2hex(bytes), sprint(show, id))
+end
+
+@testset "Config" begin
+    config = NCCL.Config(comm_name="test", net_name="Socket", cga_cluster_size=2,
+                         min_ctas=1, max_ctas=8, nvls_ctas=16,
+                         cta_policy=NCCL.LibNCCL.NCCL_CTA_POLICY_EFFICIENCY, split_share=true,
+                         traffic_class=3, collnet_enable=false, n_channels_per_net_peer=4,
+                         max_p2p_peers=5, graph_usage_mode=1)
+    @test sprint(show, NCCL.Config(comm_name="test", min_ctas=1)) ==
+          "NCCL.Config(comm_name=\"test\", min_ctas=1)"
+    @test_throws InexactError NCCL.Config(min_ctas=typemax(Int))
+    @test_throws ArgumentError Communicator(1, 0, NCCL.UniqueID();
+                                            config=NCCL.Config(comm_name="a\0b"))
+
+    # a configured single-rank communicator
+    comm = Communicator(1, 0, NCCL.UniqueID(); config)
+    buf = CUDACore.ones(Float64, 4)
+    NCCL.Allreduce!(buf, +, comm)
+    @test Array(buf) == ones(4)
+    NCCL.destroy(comm)
+end
+
+@testset "nonblocking communicators" begin
+    # values that NCCL reads as 0 (old versions also read values without digits as 0)
+    for str in ["0", "0trailing", " 0", "-0", "0x0", "000", "abc", "4294967296"]
+        withenv("NCCL_COMM_BLOCKING" => str) do
+            @test_throws ErrorException Communicator(1, 0, NCCL.UniqueID())
+        end
+    end
+    withenv("NCCL_COMM_BLOCKING" => "0") do
+        @test_throws ErrorException NCCL.Communicators(CUDACore.devices())
+    end
+    # values that NCCL ignores (out of range or other than 0 and 1), or reads as 1
+    for str in ["", "1", "1trailing", "2", "99999999999999999999"]
+        withenv("NCCL_COMM_BLOCKING" => str) do
+            @test Communicator(comm -> isopen(comm), 1, 0, NCCL.UniqueID())
+        end
+    end
+
+    # NCCL caches the setting, so the following need a fresh process
+    script = """
+        using CUDACore, NCCL, Test
+        @test_throws ErrorException Communicator(1, 0, NCCL.UniqueID())
+        @test_throws ErrorException NCCL.Communicators(CUDACore.devices())
+        """
+    @test run_script(script; env=("NCCL_COMM_BLOCKING" => "0",))
+    @test run_script(script; env=("NCCL_COMM_BLOCKING" => "0trailing",))
+
+    # NCCL also reads the setting from configuration files, but does not let these override
+    # the environment, where NCCL.jl sets it when it isn't set yet
+    mktempdir() do dir
+        conf = joinpath(dir, "nccl.conf")
+        write(conf, "NCCL_COMM_BLOCKING=0\n")
+        @test run_script("""
+            using CUDACore, NCCL, Test
+            @test ENV["NCCL_COMM_BLOCKING"] == "1"
+            comm = Communicator(1, 0, NCCL.UniqueID())
+            buf = CUDACore.ones(Float64, 4)
+            NCCL.Allreduce!(buf, +, comm)
+            @test Array(buf) == ones(4)
+            NCCL.destroy(comm)
+            """; env=("NCCL_CONF_FILE" => conf, "NCCL_COMM_BLOCKING" => nothing))
+
+        # also when the variable is unset after loading NCCL.jl. NCCL applies the file at
+        # the first call that reads a setting, so the child must not call NCCL before
+        # creating its communicator: it uses an id created here.
+        id_file = joinpath(dir, "id")
+        write(id_file, Vector{UInt8}(NCCL.UniqueID()))
+        @test run_script("""
+            using CUDACore, NCCL, Test
+            delete!(ENV, "NCCL_COMM_BLOCKING")
+            comm = Communicator(1, 0, NCCL.UniqueID(read($(repr(id_file)))))
+            @test ENV["NCCL_COMM_BLOCKING"] == "1"
+            buf = CUDACore.ones(Float64, 4)
+            NCCL.Allreduce!(buf, +, comm)
+            @test Array(buf) == ones(4)
+            NCCL.destroy(comm)
+            """; env=("NCCL_CONF_FILE" => conf, "NCCL_COMM_BLOCKING" => nothing))
+    end
+end
+
+@testset "failed initialization" begin
+    # a network module that doesn't exist makes NCCL fail to initialize the communicators
+    devs = collect(CUDACore.devices())
+    config = NCCL.Config(net_name="nonexistent")
+    @test_throws NCCL.NCCLError Communicator(1, 0, NCCL.UniqueID(); config)
+    @test_throws NCCL.NCCLError NCCL.Communicators(devs; config)
+
+    # this doesn't affect communicators created afterwards
+    @test NCCL.Communicators(comms -> all(isopen, comms), devs)
+end
+
+if length(CUDACore.devices()) >= 2
+@testset "multiple processes" begin
+    nranks = min(length(CUDACore.devices()), 4)
+
+    # construction, properties, an allreduce, and destruction
+    @test run_ranks("""
+        comm = Communicator(nranks, rank, id; config=NCCL.Config(comm_name="test"))
+        @test isopen(comm)
+        @test NCCL.rank(comm) == rank
+        @test NCCL.nranks(comm) == nranks
+        @test NCCL.device(comm) == CuDevice(0)
+        @test length(CUDACore.devices()) == 1
+
+        buf = CuArray(fill(Float64(rank + 1), 1024))
+        NCCL.Allreduce!(buf, +, comm)
+        @test all(==(nranks * (nranks + 1) / 2), Array(buf))
+
+        NCCL.destroy(comm)
+        @test !isopen(comm)
+        NCCL.destroy(comm)
+        @test_throws InvalidStateException NCCL.Allreduce!(buf, +, comm)
+        """, nranks)
+
+    # do-block: destroyed on return
+    @test run_ranks("""
+        escaped = Ref{Communicator}()
+        ret = Communicator(nranks, rank, id) do comm
+            escaped[] = comm
+            buf = CuArray(fill(Float64(rank + 1), 1024))
+            NCCL.Allreduce!(buf, +, comm)
+            Array(buf)
+        end
+        @test all(==(nranks * (nranks + 1) / 2), ret)
+        @test !isopen(escaped[])
+        """, nranks)
+
+    # every rank fails after a collective
+    @test run_ranks("""
+        escaped = Ref{Communicator}()
+        @test_throws ErrorException("failure on rank \$rank") begin
+            Communicator(nranks, rank, id) do comm
+                escaped[] = comm
+                buf = CuArray(fill(Float64(rank + 1), 1024))
+                NCCL.Allreduce!(buf, +, comm)
+                synchronize()
+                error("failure on rank \$rank")
+            end
+        end
+        @test !isopen(escaped[])
+        """, nranks)
+
+    # abort a communicator with a collective that never completes, because the other ranks
+    # don't take part in it
+    @test run_ranks("""
+        comm = Communicator(nranks, rank, id)
+        buf = CUDACore.ones(Float64, 1024)
+        NCCL.Allreduce!(buf, +, comm)
+        synchronize()
+        queued = joinpath(dirname(ARGS[3]), "queued")
+        if rank == 0
+            NCCL.Allreduce!(buf, +, comm)
+            sleep(1)
+            @test !CUDACore.isdone(stream())
+            touch(queued)
+        else
+            while !isfile(queued)
+                sleep(0.1)
+            end
+        end
+        NCCL.abort(comm)
+        @test !isopen(comm)
+        # the collective was cancelled (a hang here is caught by the watchdog)
+        synchronize()
+        @test CUDACore.isdone(stream())
+        """, nranks)
+end
+else
+    @info "Skipping the tests with multiple processes, which need 2 GPUs"
+    @test_skip "multiple processes (needs 2 GPUs)"
+end
+
 @testset "large count" begin
     # counts used to be passed as `Cint`, and failed beyond `typemax(Cint)`
     script = """
@@ -421,7 +613,7 @@ end
             @warn "Not enough GPU memory, skipping the large count test"
             exit(0)
         end
-        comm = Communicator(1, 0)
+        comm = Communicator(1, 0, NCCL.UniqueID())
         sendbuf = CUDACore.fill(0x01, n)
         recvbuf = CUDACore.zeros(UInt8, n)
         NCCL.Allreduce!(sendbuf, recvbuf, +, comm)
@@ -511,7 +703,7 @@ end
             # the buffers are initialized asynchronously, which would confound `isdone`
             for i in 1:n
                 device!(devs[i]) do
-                    synchronize(NCCL.default_device_stream(comms[i]))
+                    synchronize(stream())
                 end
             end
             NCCL.group() do
@@ -522,7 +714,7 @@ end
                 @test !no_group_open()
                 @test all(1:n-1) do i
                     device!(devs[i]) do
-                        CUDACore.isdone(NCCL.default_device_stream(comms[i]))
+                        CUDACore.isdone(stream())
                     end
                 end
                 allreduce!(bufs, n:n)
@@ -612,7 +804,7 @@ end
                 end
                 @test no_group_open()
                 device!(devs[1]) do
-                    synchronize(NCCL.default_device_stream(comms[1]))
+                    synchronize(stream())
                     @test all(iszero, Array(bufs[1][2]))
                 end
             else
@@ -760,27 +952,25 @@ end
 
 if length(CUDACore.devices()) >= 2
     @testset "garbage collection during initialization" begin
-        # a task blocked in ncclCommInitRank, waiting for its peer, used to prevent the GC
+        # a task blocked in ncclCommInitRankConfig, waiting for its peer, used to prevent the GC
         # from running, while the peer was waiting for the GC to finish.
         #
-        # After warming up, rank 0 enters ncclCommInitRank and blocks there because rank 1
+        # After warming up, rank 0 enters ncclCommInitRankConfig and blocks there because rank 1
         # only joins after another task has completed a number of collections. With bindings
         # that aren't GC-safe the first collection never completes, so rank 1 never joins
         # and the watchdog kills the script.
         script = """
             using CUDACore, NCCL, Test
             for dev in 0:1
-                device!(dev)
-                NCCL.destroy(NCCL.Communicator(1, 0))
+                NCCL.destroy(NCCL.Communicator(1, 0, NCCL.UniqueID(); device=dev))
             end
 
             id = NCCL.UniqueID()
             initializing = Threads.Atomic{Bool}(false)
             collections = Threads.Atomic{Int}(0)
             t1 = Threads.@spawn begin
-                device!(0)
                 initializing[] = true
-                NCCL.Communicator(2, 0; unique_id=id)
+                NCCL.Communicator(2, 0, id; device=0)
             end
             Threads.@spawn begin
                 while !initializing[]
@@ -798,10 +988,7 @@ if length(CUDACore.devices()) >= 2
                     sleep(0.01)
                 end
                 @test !istaskdone(t1)
-                # NCCL uses the context current on the OS thread, and the task may have
-                # migrated while sleeping
-                device!(1)
-                NCCL.Communicator(2, 1; unique_id=id)
+                NCCL.Communicator(2, 1, id; device=1)
             end
             comms = fetch.([t1, t2])
             NCCL.destroy(comms)

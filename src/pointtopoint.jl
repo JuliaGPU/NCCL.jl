@@ -2,7 +2,7 @@
     NCCL.Send(
         sendbuf, comm::Communicator;
         dest::Integer,
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
     )
 
 Send data from `sendbuf` to rank `dest`. A matching [`Recv!`](@ref) must also be
@@ -12,7 +12,7 @@ called.
 - [`ncclSend`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/p2p.html#ncclsend)
 """
 function Send(sendbuf, comm::Communicator; dest::Integer,
-              stream::CuStream=default_device_stream(comm))
+              stream::Union{CuStream,Nothing}=nothing)
     count = length(sendbuf)
     datatype = ncclDataType_t(eltype(sendbuf))
     dest = Cint(dest)
@@ -26,7 +26,7 @@ end
     NCCL.Recv!(
         recvbuf, comm::Communicator;
         source::Integer,
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
     )
 
 Write the data from a matching [`Send`](@ref) on rank `source` into `recvbuf`.
@@ -36,7 +36,7 @@ Write the data from a matching [`Send`](@ref) on rank `source` into `recvbuf`.
 
 """
 function Recv!(recvbuf, comm::Communicator; source::Integer,
-               stream::CuStream=default_device_stream(comm))
+               stream::Union{CuStream,Nothing}=nothing)
     count = length(recvbuf)
     datatype = ncclDataType_t(eltype(recvbuf))
     source = Cint(source)
