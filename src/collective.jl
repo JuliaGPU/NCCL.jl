@@ -6,6 +6,10 @@
 Reduce array `sendbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or [`NCCL.avg`](@ref)), writing the result to `recvbuf` to all ranks.
 
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` and `recvbuf` must not be used until then.
+
 # External links
 - [`ncclAllReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclallreduce)
 """
@@ -29,6 +33,10 @@ end
 
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or `[`NCCL.avg`](@ref)`), writing the result inplace to all ranks.
+
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendrecvbuf` must not be used until then.
 """
 function Allreduce!(sendrecvbuf, op, comm::Communicator;
                     stream::Union{CuStream,Nothing}=nothing)
@@ -42,6 +50,10 @@ end
         stream::Union{CuStream,Nothing} = nothing)
 
 Copies array the `sendbuf` on rank `root` to `recvbuf` on all ranks.
+
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` and `recvbuf` must not be used until then.
 
 # External links
 - [`ncclBroadcast`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclbroadcast)
@@ -71,6 +83,10 @@ end
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or `[`NCCL.avg`](@ref)`), writing the result to `recvbuf` on rank `root`.
 
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` and `recvbuf` must not be used until then.
+
 # External links
 - [`ncclReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclreduce)
 """
@@ -98,6 +114,10 @@ end
 
 Concatenate `sendbuf` from each rank into `recvbuf` on all ranks.
 
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` and `recvbuf` must not be used until then.
+
 # External links
 - [`ncclAllGather`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclallgather)
 """
@@ -121,6 +141,10 @@ end
 Reduce `sendbuf` from each rank using `op`, and leave the reduced result
 scattered over the devices such that `recvbuf` on each rank will contain the
 `i`th block of the result.
+
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` and `recvbuf` must not be used until then.
 
 # External links
 - [`ncclReduceScatter`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclreducescatter)

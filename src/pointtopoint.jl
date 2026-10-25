@@ -8,6 +8,10 @@
 Send data from `sendbuf` to rank `dest`. A matching [`Recv!`](@ref) must also be
 called.
 
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `sendbuf` must not be used until then.
+
 # External links
 - [`ncclSend`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/p2p.html#ncclsend)
 """
@@ -30,6 +34,10 @@ end
     )
 
 Write the data from a matching [`Send`](@ref) on rank `source` into `recvbuf`.
+
+The operation is enqueued on `stream`, which defaults to the task's stream on the device of
+`comm`, and is ordered like other work on that stream. Inside an [`NCCL.group`](@ref), it is
+only enqueued when the group ends, and `recvbuf` must not be used until then.
 
 # External links
 - [`ncclRecv`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/p2p.html#ncclrecv)

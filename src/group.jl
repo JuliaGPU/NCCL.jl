@@ -10,6 +10,9 @@
 mutable struct GroupState
     owner::Task
     depth::Int
+    # objects used by operations in the group, which NCCL only uses when the outermost
+    # group ends
+    roots::Vector{Any}
 end
 
 # keyed by `Threads.threadid()`; only contains threads with an open group
@@ -32,11 +35,19 @@ function check_group_owner()
     return
 end
 
+# Keep `objs` alive until the open group, if any, has ended. Must be called by the owner of
+# the group (see `check_group_owner`).
+function retain_in_group(objs...)
+    state = group_state()
+    state === nothing || push!(state.roots, objs)
+    return
+end
+
 function enter_group(tid::Int, task::Task)
     @lock group_lock begin
         state = get(group_states, tid, nothing)
         if state === nothing
-            group_states[tid] = GroupState(task, 1)
+            group_states[tid] = GroupState(task, 1, Any[])
         elseif state.owner === task
             state.depth += 1
         else
@@ -64,6 +75,14 @@ which makes it possible to issue a collective on several communicators from a si
 or to combine multiple point-to-point operations without deadlocking.
 
 Groups can be nested; operations are submitted when the outermost group ends.
+
+Because operations in a group are only enqueued on their streams when the outermost group
+ends, the buffers passed to them must not be read, written, freed, or handed to another task
+or stream until then. NCCL.jl keeps these buffers, as well as the streams and communicators
+of the operations, alive until the group ends, so they do not need to be referenced
+elsewhere. Once the group has ended, the operations are enqueued on their streams, and are
+ordered like any other work on those streams: the usual CUDA.jl rules for using arrays from
+other tasks and streams apply.
 
 NCCL keeps track of groups per OS thread, so the following rules apply:
 

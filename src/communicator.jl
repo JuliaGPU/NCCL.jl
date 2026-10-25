@@ -107,6 +107,9 @@ end
 # between the check and the native call that would join the group. For the same reason,
 # callers have to convert scalar arguments (roots, peers) to their C type before calling
 # `submit`: converting a custom `Integer` can yield as well.
+#
+# Inside a group, NCCL only enqueues the operation when the outermost group ends, so the
+# arguments are kept alive until then.
 function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
     _check_buffer_devices(comm.device, buffers...)
@@ -121,6 +124,7 @@ function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers.
                 comm_handle = Base.unsafe_convert(ncclComm_t, comm)
                 stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
                 check_group_owner()
+                retain_in_group(buffers, cbuffers, comm, s)
                 f(ptrs..., comm_handle, stream_handle)
             end
         end

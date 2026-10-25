@@ -765,6 +765,121 @@ end
             @test no_group_open()
         end
 
+        @testset "temporaries" begin
+            # operations in a group only use their buffers when the group ends, so the group
+            # has to keep them alive. the send buffers (and the stream) here are only
+            # referenced by the group; once freed, their memory would be reused by the
+            # arrays allocated afterwards.
+            function issue!(recvbufs, refs)
+                for (i, dev) in enumerate(devs)
+                    device!(dev) do
+                        sendbuf = CuArray(fill(Float64(i), N))
+                        s = CuStream()
+                        NCCL.Allreduce!(sendbuf, recvbufs[i], +, comms[i]; stream=s)
+                        push!(refs, WeakRef(sendbuf), WeakRef(s))
+                    end
+                end
+            end
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            refs = WeakRef[]
+            NCCL.group() do
+                issue!(recvbufs, refs)
+                GC.gc(true)
+                @test all(ref -> ref.value !== nothing, refs)
+                for dev in devs
+                    device!(dev) do
+                        for _ in 1:4
+                            CuArray(fill(-1.0, N))
+                        end
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs))), Array(recvbufs[i]))
+                end
+            end
+            @test no_group_open()
+        end
+
+        @testset "temporaries collected right after the group" begin
+            # once the group has ended, its operations are enqueued but may not have run yet
+            # (their streams are busy here). collecting the temporaries then must not let
+            # their memory be reused before the operations are done with it.
+            function stall(cycles)
+                start = CUDACore.clock(UInt64)
+                while CUDACore.clock(UInt64) - start < cycles
+                end
+                return
+            end
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            streams = map(dev -> device!(() -> CuStream(), dev), devs)
+            function issue!()
+                for (i, dev) in enumerate(devs)
+                    device!(dev) do
+                        sendbuf = CuArray(fill(Float64(i), N))
+                        NCCL.Allreduce!(sendbuf, recvbufs[i], +, comms[i]; stream=streams[i])
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @cuda stream=streams[i] stall(UInt64(1) << 28)
+                end
+            end
+            NCCL.group(issue!)
+            GC.gc(true)
+            for dev in devs
+                device!(dev) do
+                    for _ in 1:4
+                        CuArray(fill(-1.0, N))
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs))), Array(recvbufs[i]))
+                end
+            end
+        end
+
+        @testset "ordering on the task's stream" begin
+            # the operations are enqueued when the group ends, after the work that produces
+            # their inputs and before the work that consumes their outputs
+            function delayed_fill!(buf, val, cycles)
+                start = CUDACore.clock(UInt64)
+                while CUDACore.clock(UInt64) - start < cycles
+                end
+                for j in threadIdx().x:blockDim().x:length(buf)
+                    @inbounds buf[j] = val
+                end
+                return
+            end
+            sendbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @cuda threads=256 delayed_fill!(sendbufs[i], Float64(i), UInt64(1) << 28)
+                end
+            end
+            NCCL.group() do
+                for i in eachindex(devs)
+                    NCCL.Allreduce!(sendbufs[i], recvbufs[i], +, comms[i])
+                end
+            end
+            @test !device!(() -> CUDACore.isdone(stream()), devs[1])
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    recvbufs[i] .+= 1
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs)) + 1), Array(recvbufs[i]))
+                end
+            end
+        end
+
         @testset "nesting" begin
             # only the outermost group submits. the last rank's operation is issued after the
             # inner group ends, so if that submitted the other ranks' operations, they would
