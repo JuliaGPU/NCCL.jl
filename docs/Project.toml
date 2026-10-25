@@ -1,5 +1,4 @@
 [deps]
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DocumenterCodeBlocks = "b6400b83-267f-4b55-9fd8-bffc853bdfd8"
 NCCL = "3fe64909-d7a1-4096-9b7d-7a0f12cf0f6b"
@@ -8,4 +7,5 @@ NCCL = "3fe64909-d7a1-4096-9b7d-7a0f12cf0f6b"
 NCCL = { path = ".." }
 
 [compat]
+Documenter = "1"
 DocumenterCodeBlocks = "1.3"
