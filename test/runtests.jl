@@ -1171,15 +1171,23 @@ end
                 buf -> NCCL.Send(buf, comm; dest=0),
                 buf -> NCCL.Recv!(buf, comm; source=0),
             ]
+            # (unified memory, which CUDACore currently synchronizes on the host when it is
+            # used on another stream; device memory may be handed over on the GPU instead)
+            ones_unified() = fill!(CuArray{Float64,1,CUDACore.UnifiedMemory}(undef, 4), 1)
             # compile the operations, which would take longer than the kernel below
             NCCL.group() do
                 for op in ops
-                    op(device!(() -> CUDACore.ones(Float64, 4), devs[1]))
+                    op(device!(ones_unified, devs[1]))
                 end
+            end
+            # (outside of a group too, which submits differently; sending to or receiving
+            # from oneself does need a group)
+            for op in ops[1:2]
+                op(device!(ones_unified, devs[1]))
             end
             for op in ops
                 buf = device!(devs[1]) do
-                    buf = CUDACore.ones(Float64, 4)
+                    buf = ones_unified()
                     # the buffer is last used on another stream, after a long-running kernel,
                     # so using it on the operation's stream has to wait for that stream
                     busy = CuStream()
@@ -1232,6 +1240,40 @@ end
                 notify(release)
                 wait(other[])
                 @test no_group_open()
+            end
+            NCCL.destroy(comm)
+        end
+
+        @testset "other task uses a buffer during submission" begin
+            # the buffers of an operation are only converted to pointers one by one. if
+            # converting the receive buffer yields, another task can use the send buffer on
+            # another stream in the meantime. the operation must hold on to the send buffer
+            # until it has been enqueued, so that the other task's write waits for it, rather
+            # than racing with it while CUDACore believes it comes after the operation.
+            comm = only(NCCL.Communicators(devs[1:1]))
+            device!(devs[1]) do
+                s = CuStream()
+                other_stream = CuStream()
+                sendbuf = CuArray(fill(42.0, N))
+                # (unified memory, so that converting it is likely to yield; see above)
+                recvbuf = fill!(CuArray{Float64,1,CUDACore.UnifiedMemory}(undef, N), 0)
+                # the send buffer is already used by `s`, so converting it doesn't yield
+                NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+                stream!(() -> (sendbuf .= 42), s)
+                synchronize(s)
+                stream!(() -> (CUDACore.zeros(Float64, N) .= -1), other_stream)  # compile
+                # the receive buffer is used by a busy stream, so converting it may yield
+                busy = CuStream()
+                @cuda stream=busy spin(recvbuf, UInt64(1) << 29)
+
+                # if it doesn't, the other task only writes after the operation
+                other = @async stream!(other_stream) do
+                    sendbuf .= -1
+                end
+                NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+                wait(other)
+                @test Array(recvbuf) == fill(42.0, N)
+                @test Array(sendbuf) == fill(-1.0, N)
             end
             NCCL.destroy(comm)
         end

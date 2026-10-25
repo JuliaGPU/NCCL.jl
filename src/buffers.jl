@@ -17,6 +17,12 @@ function iscontiguous(buf::StridedCuArray)
     return true
 end
 
+# The allocation behind a buffer, as needed by `CUDACore.with_managed`. CUDACore has no
+# public accessor for it (only an internal `managed_memory` on newer versions), so this
+# relies on the internal `data` field of `CuArray`.
+managed_memory(buf::CuArray) = buf.data[]
+managed_memory(buf::StridedCuArray) = managed_memory(parent(buf))
+
 buffer_device(buf::DenseCuArray) = CUDACore.device(buf)
 buffer_device(buf::StridedCuArray) = buffer_device(parent(buf))
 

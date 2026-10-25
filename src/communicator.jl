@@ -85,35 +85,58 @@ end
 # the current stream: it then waits for work on other streams that used the memory before,
 # and later uses of the memory on other streams wait for the NCCL operation.
 #
+# CUDACore only guarantees this when the memory stays locked from the moment its ownership
+# is taken until the work using it has been submitted to the stream. Converting each buffer
+# separately is not enough: converting the second one can yield, after which another task
+# can take over the first one for use on another stream, before NCCL is called. Outside of
+# a group, NCCL enqueues the operation before returning, so `with_managed` locks all
+# buffers and takes ownership of them for the duration of the call.
+#
+# Inside a group, NCCL only enqueues the operation when the outermost group ends, long after
+# the call returns, which `with_managed` assumes not to happen (and the memory can't stay
+# locked across the user's code in the group). The buffers are then converted on their own,
+# and the group's contract covers the rest: they may not be used elsewhere until the group
+# ends, and they are kept alive until then (see `retain_in_group`).
+#
 # Converting a buffer to a pointer can yield (CUDACore may synchronize), and while this task
 # is suspended another task on the same thread may open a group. The ownership check
 # therefore only happens once every argument has been converted, so that nothing can yield
 # between the check and the native call that would join the group. For the same reason,
 # callers have to convert scalar arguments (roots, peers) to their C type before calling
 # `submit`: converting a custom `Integer` can yield as well.
-#
-# Inside a group, NCCL only enqueues the operation when the outermost group ends, so the
-# arguments are kept alive until then.
 function submit(f, comm::Communicator, stream::Union{CuStream,Nothing}, buffers...)
     check_open(comm)
     CUDACore.context!(comm.context) do
         # the task's stream can be set to anything with `stream!`
         s = stream === nothing ? CUDACore.stream() : stream
         check_stream(comm, s)
+        # (on CUDACore 6.4, conversions inside `with_managed` take ownership on the current
+        # stream, so `stream!` is needed there too)
         CUDACore.stream!(s) do
-            cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
-            GC.@preserve buffers cbuffers comm s begin
-                ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
-                comm_handle = Base.unsafe_convert(ncclComm_t, comm)
-                stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
-                check_group_owner()
-                retain_in_group(buffers, cbuffers, comm, s)
-                f(ptrs..., comm_handle, stream_handle)
+            state = group_state()
+            if state !== nothing && state.owner === current_task()
+                submit_converted(f, comm, s, buffers)
+            else
+                managed = [managed_memory(buf) for buf in buffers]
+                CUDACore.with_managed(managed; stream=s) do
+                    submit_converted(f, comm, s, buffers)
+                end
             end
         end
     end
 end
 
+function submit_converted(f, comm::Communicator, s::CuStream, buffers)
+    cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
+    GC.@preserve buffers cbuffers comm s begin
+        ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
+        comm_handle = Base.unsafe_convert(ncclComm_t, comm)
+        stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, s)
+        check_group_owner()
+        retain_in_group(buffers, cbuffers, comm, s)
+        f(ptrs..., comm_handle, stream_handle)
+    end
+end
 
 ## destruction
 
