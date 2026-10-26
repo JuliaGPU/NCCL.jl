@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Getting started · NCCL.jl</title><meta name="title" content="Getting started · NCCL.jl"/><meta property="og:title" content="Getting started · NCCL.jl"/><meta property="twitter:title" content="Getting started · NCCL.jl"/><meta name="description" content="Documentation for NCCL.jl."/><meta property="og:description" content="Documentation for NCCL.jl."/><meta property="twitter:description" content="Documentation for NCCL.jl."/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">NCCL.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Introduction</a></li><li class="is-active"><a class="tocitem" href>Getting started</a><ul class="internal"><li><a class="tocitem" href="#Installation"><span>Installation</span></a></li><li><a class="tocitem" href="#One-process-driving-all-GPUs"><span>One process driving all GPUs</span></a></li><li><a class="tocitem" href="#One-task-per-GPU"><span>One task per GPU</span></a></li><li><a class="tocitem" href="#One-process-per-GPU"><span>One process per GPU</span></a></li><li><a class="tocitem" href="#MPI"><span>MPI</span></a></li></ul></li><li><span class="tocitem">Manual</span><ul><li><a class="tocitem" href="../communicators/">Communicators</a></li><li><a class="tocitem" href="../operations/">Operations</a></li><li><a class="tocitem" href="../groups/">Groups</a></li><li><a class="tocitem" href="../streams/">Streams and synchronization</a></li><li><a class="tocitem" href="../errors/">Errors</a></li></ul></li><li><a class="tocitem" href="../api/">API reference</a></li><li><a class="tocitem" href="../migration/">Migrating from NCCL.jl 0.1</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Getting started</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Getting started</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/JuliaGPU/NCCL.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/JuliaGPU/NCCL.jl/blob/master/docs/src/getting_started.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Getting-started"><a class="docs-heading-anchor" href="#Getting-started">Getting started</a><a id="Getting-started-1"></a><a class="docs-heading-anchor-permalink" href="#Getting-started" title="Permalink"></a></h1><p>Every rank of a communicator needs a GPU of its own, and all ranks have to create their part of the communicator at the same time: creating a communicator blocks until every rank has joined. How the ranks find each other depends on how the program is organized. This page shows complete programs for the common setups. Each of them sums a small vector over all ranks.</p><h2 id="Installation"><a class="docs-heading-anchor" href="#Installation">Installation</a><a id="Installation-1"></a><a class="docs-heading-anchor-permalink" href="#Installation" title="Permalink"></a></h2><p>Install NCCL.jl together with CUDACore.jl, which provides the arrays, devices and streams that the examples use:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.add([&quot;NCCL&quot;, &quot;CUDACore&quot;])</code></pre><p>CUDACore.jl is the core of <a href="https://github.com/JuliaGPU/CUDA.jl">CUDA.jl</a>. In a project that uses CUDA.jl, <code>using CUDA</code> can replace <code>using CUDACore</code>: CUDA.jl re-exports CUDACore.jl, so e.g. <code>CUDA.device!</code> and <code>CuArray</code> are the same functions and types. The <a href="#MPI">MPI</a> example also needs MPI.jl: <code>Pkg.add(&quot;MPI&quot;)</code>.</p><h2 id="One-process-driving-all-GPUs"><a class="docs-heading-anchor" href="#One-process-driving-all-GPUs">One process driving all GPUs</a><a id="One-process-driving-all-GPUs-1"></a><a class="docs-heading-anchor-permalink" href="#One-process-driving-all-GPUs" title="Permalink"></a></h2><p>The simplest setup uses a single process and a single task for all GPUs of one node. <a href="../api/#NCCL.Communicators"><code>NCCL.Communicators</code></a> creates a communicator with one rank per device, without the need for a <a href="../api/#NCCL.UniqueID"><code>UniqueID</code></a>:</p><pre><code class="language-julia hljs">using CUDACore, NCCL
+
+devs = collect(CUDACore.devices())
+bufs = map(enumerate(devs)) do (i, dev)
+    CUDACore.device!(dev) do
+        CuArray(fill(Float32(i), 4))
+    end
+end
+
+NCCL.Communicators(devs) do comms
+    NCCL.group() do
+        for (comm, buf) in zip(comms, bufs)
+            NCCL.Allreduce!(buf, +, comm)
+        end
+    end
+end
+
+for (dev, buf) in zip(devs, bufs)
+    CUDACore.device!(dev) do
+        println(Array(buf))
+    end
+end</code></pre><p>Rank <code>i-1</code> uses <code>devs[i]</code>. A collective operation only starts once every rank has issued it, and NCCL waits for that while issuing the operation. When one task drives all ranks, it can therefore only issue an operation on all of them inside <a href="../api/#NCCL.group"><code>NCCL.group</code></a>, which issues them together when the group ends (see <a href="../groups/#Groups">Groups</a>). The operations run asynchronously on the stream of each device: <code>Array(buf)</code> copies the result on the same stream, so it waits for the operation to complete.</p><p>The do-block form destroys the communicators when the block ends (see <a href="../communicators/#Communicator-lifetime">Communicator lifetime</a>).</p><h2 id="One-task-per-GPU"><a class="docs-heading-anchor" href="#One-task-per-GPU">One task per GPU</a><a id="One-task-per-GPU-1"></a><a class="docs-heading-anchor-permalink" href="#One-task-per-GPU" title="Permalink"></a></h2><p>The ranks can also run on different threads of one process, each in a task of its own. One of the tasks, or the parent task, creates the <a href="../api/#NCCL.UniqueID"><code>UniqueID</code></a>, and each task creates its rank with <a href="../api/#NCCL.Communicator"><code>NCCL.Communicator(nranks, rank, id)</code></a>:</p><pre><code class="language-julia hljs"># start Julia with at least as many threads as there are GPUs, e.g. `julia --threads=4`
+using CUDACore, NCCL
+
+devs = collect(CUDACore.devices())
+nranks = length(devs)
+Threads.nthreads() &gt;= nranks || error(&quot;start Julia with at least $nranks threads&quot;)
+
+id = NCCL.UniqueID()
+tasks = map(0:nranks-1) do rank
+    Threads.@spawn begin
+        CUDACore.device!(devs[rank+1])
+        NCCL.Communicator(nranks, rank, id) do comm
+            buf = CuArray(fill(Float32(rank+1), 4))
+            NCCL.Allreduce!(buf, +, comm)
+            Array(buf)
+        end
+    end
+end
+foreach(println, fetch.(tasks))</code></pre><p>Every task has to run on a thread of its own: creating a communicator blocks the thread until all ranks have joined, so a task that has to wait for a free thread would never join. The communicator uses the <code>device</code> keyword argument of <code>Communicator</code>, which defaults to the task&#39;s current device. Each task issues the operations of its own rank, so no group is needed.</p><h2 id="One-process-per-GPU"><a class="docs-heading-anchor" href="#One-process-per-GPU">One process per GPU</a><a id="One-process-per-GPU-1"></a><a class="docs-heading-anchor-permalink" href="#One-process-per-GPU" title="Permalink"></a></h2><p>Most multi-node programs run one process per GPU. Rank 0 then creates the <a href="../api/#NCCL.UniqueID"><code>UniqueID</code></a>, and sends it to the other processes. A <code>UniqueID</code> is 128 bytes: <code>Vector{UInt8}(id)</code> returns them, and <code>NCCL.UniqueID(bytes)</code> turns them back into an identifier. This program exchanges them through a file on a file system that all processes can access:</p><pre><code class="language-julia hljs"># usage: julia --project allreduce.jl RANK NRANKS DEVICE ID_FILE
+using CUDACore, NCCL
+
+rank = parse(Int, ARGS[1])
+nranks = parse(Int, ARGS[2])
+device = parse(Int, ARGS[3])    # index of the GPU among those this process can see
+id_file = ARGS[4]
+
+if rank == 0
+    id = NCCL.UniqueID()
+    # write to a temporary file first, so that other ranks never read a partial file
+    write(id_file * &quot;.tmp&quot;, Vector{UInt8}(id))
+    mv(id_file * &quot;.tmp&quot;, id_file)
+else
+    while !isfile(id_file)
+        sleep(0.1)
+    end
+    id = NCCL.UniqueID(read(id_file))
+end
+
+CUDACore.device!(device)
+
+NCCL.Communicator(nranks, rank, id) do comm
+    buf = CuArray(fill(Float32(rank+1), 4))
+    NCCL.Allreduce!(buf, +, comm)
+    println(&quot;rank $rank: &quot;, Array(buf))
+end</code></pre><p>Start the processes at the same time, and pass a path that doesn&#39;t exist yet as <code>ID_FILE</code>. On a single node with four GPUs, rank <code>i</code> can use GPU <code>i</code>:</p><pre><code class="language-sh hljs">for rank in 0 1 2 3; do
+    julia --project allreduce.jl $rank 4 $rank /tmp/nccl-id &amp;
+done
+wait</code></pre><p>On several nodes, <code>RANK</code> is the global rank, but <code>DEVICE</code> is the index of a GPU on the node of the process, and the processes on one node must use different GPUs. Job schedulers often make only a single GPU visible to each process, e.g. by setting <code>CUDA_VISIBLE_DEVICES</code>; that GPU is then device 0.</p><p>Only one rank may create the identifier: creating it also starts a listener in that process, which the other ranks connect to. The identifier can also be sent over a socket, or with any other library: it is a plain bits type, so for example <code>Serialization</code> and <code>Distributed</code> can send it as is.</p><h2 id="MPI"><a class="docs-heading-anchor" href="#MPI">MPI</a><a id="MPI-1"></a><a class="docs-heading-anchor-permalink" href="#MPI" title="Permalink"></a></h2><p>In programs that use MPI, loading <a href="https://github.com/JuliaParallel/MPI.jl">MPI.jl</a> enables <a href="../api/#NCCL.Communicator-Tuple{Any}"><code>NCCL.Communicator(mpicomm)</code></a>, which creates a communicator with the ranks of an MPI communicator: rank 0 creates the identifier and broadcasts it over <code>mpicomm</code>, and every MPI rank becomes the NCCL rank with the same index.</p><p>Each process on a node has to use a different GPU. Unless each process only sees a single GPU (e.g. because the launcher sets <code>CUDA_VISIBLE_DEVICES</code> per process), select one based on the rank of the process among the processes on the same node:</p><pre><code class="language-julia hljs">using MPI, CUDACore, NCCL
+MPI.Init()
+
+world_rank = MPI.Comm_rank(MPI.COMM_WORLD)
+node_comm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, world_rank)
+MPI.Comm_size(node_comm) &lt;= ndevices() ||
+    error(&quot;more processes on this node than GPUs&quot;)
+CUDACore.device!(MPI.Comm_rank(node_comm))
+
+NCCL.Communicator(MPI.COMM_WORLD) do comm
+    buf = CuArray(fill(Float32(world_rank+1), 4))
+    NCCL.Allreduce!(buf, +, comm)
+    println(&quot;rank $world_rank: &quot;, Array(buf))
+end</code></pre><p>Run it with MPI.jl&#39;s launcher, e.g. <span>$`$(MPI.mpiexec()) -n 4 julia --project script.jl`$</span>, or with the <code>mpiexec</code> of the system&#39;s MPI library if MPI.jl is configured to use that.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Introduction</a><a class="docs-footer-nextpage" href="../communicators/">Communicators »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.19.0 on <span class="colophon-date" title="Monday 26 October 2026 08:57">Monday 26 October 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
