@@ -314,6 +314,332 @@ end
     @test run_script(script; timeout=300)
 end
 
+@testset "groups" begin
+    # a broken group can deadlock, so run these in a separate process
+    script = raw"""
+        using Test, CUDACore, NCCL
+
+        devs = collect(CUDACore.devices())
+        comms = NCCL.Communicators(devs)
+        N = 512
+
+        function buffers()
+            map(enumerate(devs)) do (i, dev)
+                device!(dev) do
+                    CuArray(fill(Float64(i), N)), CUDACore.zeros(Float64, N)
+                end
+            end
+        end
+        allreduce!(bufs, range=eachindex(devs)) =
+            for i in range
+                NCCL.Allreduce!(bufs[i]..., +, comms[i])
+            end
+        function check(bufs)
+            all(enumerate(devs)) do (i, dev)
+                device!(dev) do
+                    all(==(sum(1:length(devs))), Array(bufs[i][2]))
+                end
+            end
+        end
+        # whether this task has no group open: if it had, another task on this thread could
+        # not open one
+        no_group_open() = fetch(@async try
+            NCCL.group(() -> nothing)
+            true
+        catch err
+            err isa ConcurrencyViolationError || rethrow()
+            false
+        end)
+
+        # a buffer whose conversion to a pointer calls `hook`
+        struct YieldingBuffer{T} <: AbstractVector{T}
+            data::CuVector{T}
+            hook::Function
+        end
+        Base.size(b::YieldingBuffer) = size(b.data)
+        CUDACore.device(b::YieldingBuffer) = CUDACore.device(b.data)
+        function Base.unsafe_convert(::Type{CuPtr{T}}, b::YieldingBuffer{T}) where {T}
+            b.hook()
+            Base.unsafe_convert(CuPtr{T}, b.data)
+        end
+
+        # an integer whose conversion calls `hook`
+        struct YieldingInt <: Integer
+            val::Int
+            hook::Function
+        end
+        function Base.Int32(x::YieldingInt)
+            x.hook()
+            Int32(x.val)
+        end
+        Base.convert(::Type{Int32}, x::YieldingInt) = Int32(x)
+
+        @testset "groups" begin
+
+        @testset "basic" begin
+            bufs = buffers()
+            @test NCCL.group(() -> (allreduce!(bufs); 42)) == 42
+            @test check(bufs)
+            @test no_group_open()
+        end
+
+        @testset "nesting" begin
+            # only the outermost group submits. the last rank's operation is issued after the
+            # inner group ends, so if that submitted the other ranks' operations, they would
+            # be stuck waiting for it (and synchronizing would deadlock).
+            bufs = buffers()
+            n = length(devs)
+            half = max(1, n ÷ 2)
+            # the buffers are initialized asynchronously, which would confound `isdone`
+            for i in 1:n
+                device!(devs[i]) do
+                    synchronize(NCCL.default_device_stream(comms[i]))
+                end
+            end
+            NCCL.group() do
+                allreduce!(bufs, 1:half-1)
+                NCCL.group() do
+                    allreduce!(bufs, half:n-1)
+                end
+                @test !no_group_open()
+                @test all(1:n-1) do i
+                    device!(devs[i]) do
+                        CUDACore.isdone(NCCL.default_device_stream(comms[i]))
+                    end
+                end
+                allreduce!(bufs, n:n)
+            end
+            @test check(bufs)
+            @test no_group_open()
+        end
+
+        @testset "other task on the same thread" begin
+            bufs = buffers()
+            errs = NCCL.group() do
+                # `@async` tasks run on the same thread, when the group's owner yields
+                op = @async try
+                    allreduce!(bufs)
+                catch err
+                    err
+                end
+                grp = @async try
+                    NCCL.group(() -> nothing)
+                catch err
+                    err
+                end
+                fetch(op), fetch(grp)
+            end
+            @test errs[1] isa ConcurrencyViolationError
+            @test errs[2] isa ConcurrencyViolationError
+            @test no_group_open()
+
+            NCCL.group(() -> allreduce!(bufs))
+            @test check(bufs)
+        end
+
+        @testset "exceptions" begin
+            # before issuing any operation
+            @test_throws ErrorException("before") NCCL.group() do
+                error("before")
+            end
+            @test no_group_open()
+
+            # after issuing all operations, which are still submitted
+            bufs = buffers()
+            @test_throws ErrorException("after") NCCL.group() do
+                allreduce!(bufs)
+                error("after")
+            end
+            @test check(bufs)
+            @test no_group_open()
+
+            # in a nested group
+            @test_throws ErrorException("nested") NCCL.group() do
+                NCCL.group() do
+                    error("nested")
+                end
+            end
+            @test no_group_open()
+
+            # a send to oneself without a matching receive, which is invalid, so that NCCL
+            # fails to end the group
+            comm = only(NCCL.Communicators(devs[1:1]))
+            buf = device!(() -> CUDACore.ones(Float64, 4), devs[1])
+            invalid_op() = NCCL.Send(buf, comm; dest=0)
+
+            # an invalid operation makes the group fail
+            @test_throws NCCL.NCCLError NCCL.group() do
+                invalid_op()
+            end
+            @test no_group_open()
+
+            # ending the group fails too: the original exception is preserved
+            @test_throws ErrorException("both") NCCL.group() do
+                invalid_op()
+                error("both")
+            end
+            @test no_group_open()
+            NCCL.destroy(comm)
+
+            # a failing NCCL call discards the queued operations. only the first rank
+            # participates in the allreduce, so submitting it would leave that rank waiting
+            # for its peers, and the following group would deadlock. this needs several
+            # ranks: NCCL executes operations on a single-rank communicator immediately,
+            # instead of queueing them.
+            if length(devs) >= 2
+                bufs = buffers()
+                @test_throws NCCL.NCCLError NCCL.group() do
+                    allreduce!(bufs, 1:1)
+                    NCCL.Broadcast!(bufs[1]..., comms[1]; root=length(devs))
+                end
+                @test no_group_open()
+                device!(devs[1]) do
+                    synchronize(NCCL.default_device_stream(comms[1]))
+                    @test all(iszero, Array(bufs[1][2]))
+                end
+            else
+                @info "Skipping the test of discarded group operations, which needs 2 GPUs"
+                @test_skip "discarding queued operations (needs 2 GPUs)"
+            end
+
+            bufs = buffers()
+            NCCL.group(() -> allreduce!(bufs))
+            @test check(bufs)
+        end
+
+        @testset "stickiness" begin
+            # the task is pinned to its thread, also after the group
+            t = Threads.@spawn begin
+                before = current_task().sticky
+                inside = NCCL.group(() -> current_task().sticky)
+                before, inside, current_task().sticky
+            end
+            @test fetch(t) == (false, true, true)
+
+            t = Threads.@spawn begin
+                try
+                    NCCL.group(() -> error("sticky"))
+                catch
+                end
+                current_task().sticky
+            end
+            @test fetch(t)
+
+            # an `@async` child created in the group outlives it; parent and child must
+            # remain on the same thread
+            t = Threads.@spawn begin
+                tid = Threads.threadid()
+                started = Base.Event()
+                release = Base.Event()
+                local child
+                NCCL.group() do
+                    child = @async begin
+                        notify(started)
+                        wait(release)
+                        Threads.threadid()
+                    end
+                    wait(started)
+                end
+                sticky = current_task().sticky
+                tids = Int[]
+                for _ in 1:100
+                    sleep(0.001)
+                    push!(tids, Threads.threadid())
+                end
+                notify(release)
+                sticky, all(==(tid), tids), fetch(child) == tid
+            end
+            @test fetch(t) == (true, true, true)
+        end
+
+        @testset "conversion yields" begin
+            # converting a buffer to a pointer may yield (CUDACore can synchronize), during
+            # which another task can open a group on this thread. the operation must notice
+            # that, rather than join the other task's group.
+
+            # a single-rank communicator, so that joining the group would not deadlock
+            comm = only(NCCL.Communicators(devs[1:1]))
+            ops = [
+                buf -> NCCL.Allreduce!(buf, +, comm),
+                buf -> NCCL.Broadcast!(buf, comm),
+                buf -> NCCL.Send(buf, comm; dest=0),
+                buf -> NCCL.Recv!(buf, comm; source=0),
+            ]
+            for op in ops
+                entered = Base.Event()
+                release = Base.Event()
+                other = Ref{Task}()
+                hook = function ()
+                    # in-place operations convert the same buffer twice
+                    isassigned(other) && return
+                    other[] = @async NCCL.group() do
+                        notify(entered)
+                        wait(release)
+                    end
+                    wait(entered)
+                end
+                buf = device!(() -> YieldingBuffer(CUDACore.ones(Float64, 4), hook), devs[1])
+                @test_throws ConcurrencyViolationError op(buf)
+                notify(release)
+                wait(other[])
+                @test no_group_open()
+            end
+            NCCL.destroy(comm)
+        end
+
+        @testset "scalar conversion yields" begin
+            # the same holds for scalar arguments, which must be converted before the check
+            comm = only(NCCL.Communicators(devs[1:1]))
+            ops = [
+                (buf, x) -> NCCL.Broadcast!(buf, comm; root=x),
+                (buf, x) -> NCCL.Reduce!(buf, +, comm; root=x),
+                (buf, x) -> NCCL.Send(buf, comm; dest=x),
+                (buf, x) -> NCCL.Recv!(buf, comm; source=x),
+            ]
+            for op in ops
+                entered = Base.Event()
+                release = Base.Event()
+                other = Ref{Task}()
+                hook = function ()
+                    isassigned(other) && return
+                    other[] = @async NCCL.group() do
+                        notify(entered)
+                        wait(release)
+                    end
+                    wait(entered)
+                end
+                buf = device!(() -> CUDACore.ones(Float64, 4), devs[1])
+                @test_throws ConcurrencyViolationError op(buf, YieldingInt(0, hook))
+                notify(release)
+                wait(other[])
+                @test no_group_open()
+            end
+            NCCL.destroy(comm)
+        end
+
+        @testset "from a spawned task" begin
+            bufs = buffers()
+            t = Threads.@spawn NCCL.group() do
+                tid = Threads.threadid()
+                for i in eachindex(devs)
+                    NCCL.Allreduce!(bufs[i]..., +, comms[i])
+                    # yielding must not move the task to another thread
+                    sleep(0.01)
+                    @assert Threads.threadid() == tid
+                end
+            end
+            wait(t)
+            @test check(bufs)
+            @test no_group_open()
+        end
+
+        end
+
+        NCCL.destroy.(comms)
+        """
+    @test run_script(script; threads=4, timeout=300)
+end
+
 if length(CUDACore.devices()) >= 2
     @testset "garbage collection during initialization" begin
         # a task blocked in ncclCommInitRank, waiting for its peer, used to prevent the GC

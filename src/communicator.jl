@@ -30,8 +30,33 @@ function _check_buffer_devices(comm_device, buffers...)
     end
 end
 
+# Issue an NCCL operation on `comm`, calling `f` with a raw device pointer for each of
+# `buffers`, followed by the communicator and stream handles.
+#
+# Converting a buffer to a pointer can yield (CUDACore may synchronize), and while this task
+# is suspended another task on the same thread may open a group. The ownership check
+# therefore only happens once every argument has been converted, so that nothing can yield
+# between the check and the native call that would join the group. For the same reason,
+# callers have to convert scalar arguments (roots, peers) to their C type before calling
+# `submit`: converting a custom `Integer` can yield as well.
+function submit(f, comm::Communicator, stream::CuStream, buffers...)
+    comm_device = device(comm)
+    _check_buffer_devices(comm_device, buffers...)
+    CUDACore.device!(comm_device) do
+        cbuffers = map(buf -> Base.cconvert(CuPtr{Cvoid}, buf), buffers)
+        GC.@preserve buffers cbuffers comm stream begin
+            ptrs = map(buf -> Base.unsafe_convert(CuPtr{Cvoid}, buf), cbuffers)
+            comm_handle = Base.unsafe_convert(ncclComm_t, comm)
+            stream_handle = Base.unsafe_convert(LibNCCL.cudaStream_t, stream)
+            check_group_owner()
+            f(ptrs..., comm_handle, stream_handle)
+        end
+    end
+end
+
 function destroy(comm::Communicator)
     if comm.handle != C_NULL
+        check_group_owner()
         ncclCommDestroy(comm)
         comm.handle = ncclComm_t(C_NULL)
     end
@@ -60,6 +85,9 @@ function Communicator(nranks::Integer, rank::Integer;
                       unique_id::UniqueID=UniqueID())
     0 <= rank < nranks || throw(ArgumentError("rank must be in [0, nranks)"))
     handle_ref = Ref{ncclComm_t}(C_NULL)
+    nranks = Cint(nranks)
+    rank = Cint(rank)
+    check_group_owner()
     ncclCommInitRank(handle_ref, nranks, unique_id, rank)
     c = Communicator(handle_ref[])
     return finalizer(destroy, c)
@@ -84,6 +112,7 @@ comms = NCCL.Communicators(CUDACore.devices())
 function Communicators(deviceids::Vector{Cint})
     ndev    = length(deviceids)
     comms   = Vector{ncclComm_t}(undef, ndev)
+    check_group_owner()
     ncclCommInitAll(comms, ndev, deviceids)
     return map(comms) do ch
         c = Communicator(ch)
@@ -149,6 +178,7 @@ uncompleted operations before destroying the communicator.
 - [`ncclCommAbort`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommabort)
 """
 function abort(comm::Communicator)
+    check_group_owner()
     ncclCommAbort(comm)
     return
 end

@@ -41,8 +41,6 @@ default_device_stream
 
 ```@docs
 group
-groupStart
-groupEnd
 ```
 
 ## Collective communication
