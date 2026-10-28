@@ -9,6 +9,7 @@ include("base.jl")
 include("group.jl")
 include("config.jl")
 include("communicator.jl")
+include("buffers.jl")
 include("pointtopoint.jl")
 include("collective.jl")
 

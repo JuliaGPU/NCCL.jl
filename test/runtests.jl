@@ -169,6 +169,22 @@ end
         @test all(crecv .== answer)
     end
 
+    # in place: each rank's send buffer is its own slice of the receive buffer
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        recvbuf[ii] = CuArray(fill(-1.0, length(devs)*512))
+        recvbuf[ii][(ii-1)*512+1:ii*512] .= ii
+    end
+    NCCL.group() do
+        for ii in 1:length(devs)
+            NCCL.Allgather!(view(recvbuf[ii], (ii-1)*512+1:ii*512), recvbuf[ii], comms[ii])
+        end
+    end
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        @test collect(recvbuf[ii]) == answer
+    end
+
     NCCL.destroy(comms)
 end
 
@@ -194,6 +210,21 @@ end
         @test all(crecv .== answer)
     end
 
+    # in place: each rank's receive buffer is its own block of the send buffer
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        sendbuf[ii] = CuArray(vec(repeat(collect(1.0:length(devs)), inner=2)))
+    end
+    NCCL.group() do
+        for ii in 1:length(devs)
+            NCCL.ReduceScatter!(sendbuf[ii], view(sendbuf[ii], 2ii-1:2ii), +, comms[ii])
+        end
+    end
+    for (ii, dev) in enumerate(devs)
+        device!(ii - 1)
+        @test collect(sendbuf[ii])[2ii-1:2ii] == fill(length(devs)*ii, 2)
+    end
+
     NCCL.destroy(comms)
 end
 
@@ -214,8 +245,8 @@ end
             comm = comms[ii]
             dest = mod(NCCL.rank(comm)+1, NCCL.nranks(comm))
             source = mod(NCCL.rank(comm)-1, NCCL.nranks(comm))
-            NCCL.Send(sendbuf[ii], comm; dest)
-            NCCL.Recv!(recvbuf[ii], comm; source)
+            @test NCCL.Send(sendbuf[ii], comm; dest) === nothing
+            @test NCCL.Recv!(recvbuf[ii], comm; source) === recvbuf[ii]
         end
     end
     for (ii, dev) in enumerate(devs)
@@ -226,6 +257,179 @@ end
     end
 
     NCCL.destroy(comms)
+end
+
+# keep a stream busy for a while
+function spin(cycles)
+    start = CUDACore.clock(UInt64)
+    while CUDACore.clock(UInt64) - start < cycles
+    end
+    return
+end
+
+@testset "streams" begin
+    devs = collect(CUDACore.devices())
+    dev = last(devs)
+    comm = Communicator(1, 0, NCCL.UniqueID(); device=dev)
+    N = 512
+
+    device!(dev) do
+        sendbuf = CuArray(fill(42.0, N))
+        recvbuf = CUDACore.zeros(Float64, N)
+
+        s = CuStream()
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+        synchronize(s)
+        @test CUDACore.isdone(s)
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the operation runs on `s`, after the kernel. if the buffers were considered to be
+        # used by the task's stream, reading them on that stream would not wait for it.
+        recvbuf .= 0
+        synchronize()
+        @cuda stream=s spin(UInt64(1) << 30)
+        @test !CUDACore.isdone(s)
+        @test NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s) === recvbuf
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the default streams aren't bound to a context
+        recvbuf .= 0
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=CUDACore.default_stream())
+        @test Array(recvbuf) == fill(42.0, N)
+        recvbuf .= 0
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=legacy_stream())
+        @test Array(recvbuf) == fill(42.0, N)
+
+        # the per-thread default stream differs between the threads a task can run on,
+        # whether it is passed explicitly or is the task's stream
+        @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm;
+                                                   stream=per_thread_stream())
+        stream!(per_thread_stream()) do
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm)
+        end
+    end
+
+    # an operation can be issued while another device is active
+    device!(first(devs)) do
+        sendbuf, recvbuf = device!(dev) do
+            CuArray(fill(1.0, N)), CUDACore.zeros(Float64, N)
+        end
+        s = device!(() -> CuStream(), dev)
+        NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+        @test CUDACore.device() == first(devs)
+        device!(dev) do
+            @test Array(recvbuf) == fill(1.0, N)
+        end
+
+        # a stream on another device
+        if length(devs) > 1
+            other = CuStream()
+            @test_throws ArgumentError NCCL.Allreduce!(sendbuf, recvbuf, +, comm;
+                                                       stream=other)
+        end
+    end
+
+    NCCL.destroy(comm)
+end
+
+@testset "buffers" begin
+    devs = collect(CUDACore.devices())
+    dev = first(devs)
+    # with a single rank, operations that are valid complete immediately
+    comm = Communicator(1, 0, NCCL.UniqueID(); device=dev)
+
+    device!(dev) do
+        x = CuArray(Float64.(1:20))
+        y = CUDACore.zeros(Float64, 20)
+        m = CuArray(reshape(Float64.(1:20), 4, 5))
+
+        @testset "contiguous views" begin
+            NCCL.Allreduce!(view(x, 3:10), view(y, 11:18), +, comm)
+            @test Array(y)[11:18] == 3:10
+            NCCL.Broadcast!(view(m, :, 2), view(y, 1:4), comm)
+            @test Array(y)[1:4] == 5:8
+            NCCL.Allgather!(reshape(view(m, :, 2:3), 2, 4), view(y, 13:20), comm)
+            @test Array(y)[13:20] == 5:12
+        end
+
+        @testset "non-contiguous views" begin
+            @test_throws ArgumentError NCCL.Allreduce!(view(x, 1:2:10), view(y, 1:5), +, comm)
+            @test_throws ArgumentError NCCL.Allreduce!(view(y, 1:5), view(x, 1:2:10), +, comm)
+            @test_throws ArgumentError NCCL.Allreduce!(view(x, 1:2:10), +, comm)
+            @test_throws ArgumentError NCCL.Broadcast!(view(m, 1:2, 2:3), comm)
+            @test_throws ArgumentError NCCL.Send(view(m, 2, :), comm; dest=0)
+            @test_throws ArgumentError NCCL.Recv!(view(m, 2, :), comm; source=0)
+            err = try
+                NCCL.Reduce!(view(m, 1:2, 2:3), +, comm)
+            catch err
+                err
+            end
+            @test err isa ArgumentError
+            @test occursin("contiguous", err.msg)
+
+            # host memory
+            @test_throws ArgumentError NCCL.Allreduce!(Array(x), y, +, comm)
+        end
+
+        @testset "element types" begin
+            @test_throws ArgumentError NCCL.Allreduce!(x, CUDACore.zeros(Float32, 20), +, comm)
+            @test_throws ArgumentError NCCL.Broadcast!(x, CUDACore.zeros(Int64, 20), comm)
+        end
+
+        @testset "sizes" begin
+            @test_throws DimensionMismatch NCCL.Allreduce!(x, view(y, 1:10), +, comm)
+            @test_throws DimensionMismatch NCCL.Broadcast!(x, view(y, 1:10), comm)
+            @test_throws DimensionMismatch NCCL.Reduce!(x, view(y, 1:10), +, comm)
+            @test_throws DimensionMismatch NCCL.Allgather!(x, view(y, 1:10), comm)
+            @test_throws DimensionMismatch NCCL.ReduceScatter!(view(x, 1:10), y, +, comm)
+        end
+
+        @testset "ranks" begin
+            for root in (-1, 1)
+                @test_throws ArgumentError NCCL.Broadcast!(x, y, comm; root)
+                @test_throws ArgumentError NCCL.Reduce!(x, y, +, comm; root)
+            end
+            @test_throws ArgumentError NCCL.Send(x, comm; dest=1)
+            @test_throws ArgumentError NCCL.Recv!(y, comm; source=-1)
+        end
+
+        @testset "overlap" begin
+            # partially overlapping buffers
+            @test_throws ArgumentError NCCL.Allreduce!(view(x, 1:10), view(x, 5:14), +, comm)
+            @test_throws ArgumentError NCCL.Broadcast!(view(x, 5:14), view(x, 1:10), comm)
+            @test_throws ArgumentError NCCL.Reduce!(view(x, 1:10), view(x, 2:11), +, comm)
+            @test_throws ArgumentError NCCL.Allgather!(view(x, 2:11), view(x, 1:10), comm)
+            @test_throws ArgumentError NCCL.ReduceScatter!(view(x, 1:10), view(x, 2:11), +,
+                                                           comm)
+
+            # adjacent buffers
+            NCCL.Allreduce!(view(x, 1:10), view(x, 11:20), +, comm)
+            @test Array(x) == vcat(1:10, 1:10)
+
+            # in place
+            NCCL.Allreduce!(view(x, 1:10), view(x, 1:10), +, comm)
+            NCCL.Allgather!(view(x, 1:10), view(x, 1:10), comm)
+            NCCL.ReduceScatter!(view(x, 1:10), view(x, 1:10), +, comm)
+            @test Array(x) == vcat(1:10, 1:10)
+        end
+
+        if length(devs) > 1
+            @testset "devices" begin
+                other = device!(() -> CUDACore.zeros(Float64, 20), devs[2])
+                err = try
+                    NCCL.Allreduce!(x, other, +, comm)
+                catch err
+                    err
+                end
+                @test err isa ArgumentError
+                @test occursin("device", err.msg)
+                @test_throws ArgumentError NCCL.Allreduce!(other, x, +, comm)
+                @test_throws ArgumentError NCCL.Send(other, comm; dest=0)
+            end
+        end
+    end
+
+    NCCL.destroy(comm)
 end
 
 
@@ -661,16 +865,12 @@ end
             false
         end)
 
-        # a buffer whose conversion to a pointer calls `hook`
-        struct YieldingBuffer{T} <: AbstractVector{T}
-            data::CuVector{T}
-            hook::Function
-        end
-        Base.size(b::YieldingBuffer) = size(b.data)
-        CUDACore.device(b::YieldingBuffer) = CUDACore.device(b.data)
-        function Base.unsafe_convert(::Type{CuPtr{T}}, b::YieldingBuffer{T}) where {T}
-            b.hook()
-            Base.unsafe_convert(CuPtr{T}, b.data)
+        # keep a stream busy for a while (using `buf`)
+        function spin(buf, cycles)
+            start = CUDACore.clock(UInt64)
+            while CUDACore.clock(UInt64) - start < cycles
+            end
+            return
         end
 
         # an integer whose conversion calls `hook`
@@ -691,6 +891,121 @@ end
             @test NCCL.group(() -> (allreduce!(bufs); 42)) == 42
             @test check(bufs)
             @test no_group_open()
+        end
+
+        @testset "temporaries" begin
+            # operations in a group only use their buffers when the group ends, so the group
+            # has to keep them alive. the send buffers (and the stream) here are only
+            # referenced by the group; once freed, their memory would be reused by the
+            # arrays allocated afterwards.
+            function issue!(recvbufs, refs)
+                for (i, dev) in enumerate(devs)
+                    device!(dev) do
+                        sendbuf = CuArray(fill(Float64(i), N))
+                        s = CuStream()
+                        NCCL.Allreduce!(sendbuf, recvbufs[i], +, comms[i]; stream=s)
+                        push!(refs, WeakRef(sendbuf), WeakRef(s))
+                    end
+                end
+            end
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            refs = WeakRef[]
+            NCCL.group() do
+                issue!(recvbufs, refs)
+                GC.gc(true)
+                @test all(ref -> ref.value !== nothing, refs)
+                for dev in devs
+                    device!(dev) do
+                        for _ in 1:4
+                            CuArray(fill(-1.0, N))
+                        end
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs))), Array(recvbufs[i]))
+                end
+            end
+            @test no_group_open()
+        end
+
+        @testset "temporaries collected right after the group" begin
+            # once the group has ended, its operations are enqueued but may not have run yet
+            # (their streams are busy here). collecting the temporaries then must not let
+            # their memory be reused before the operations are done with it.
+            function stall(cycles)
+                start = CUDACore.clock(UInt64)
+                while CUDACore.clock(UInt64) - start < cycles
+                end
+                return
+            end
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            streams = map(dev -> device!(() -> CuStream(), dev), devs)
+            function issue!()
+                for (i, dev) in enumerate(devs)
+                    device!(dev) do
+                        sendbuf = CuArray(fill(Float64(i), N))
+                        NCCL.Allreduce!(sendbuf, recvbufs[i], +, comms[i]; stream=streams[i])
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @cuda stream=streams[i] stall(UInt64(1) << 28)
+                end
+            end
+            NCCL.group(issue!)
+            GC.gc(true)
+            for dev in devs
+                device!(dev) do
+                    for _ in 1:4
+                        CuArray(fill(-1.0, N))
+                    end
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs))), Array(recvbufs[i]))
+                end
+            end
+        end
+
+        @testset "ordering on the task's stream" begin
+            # the operations are enqueued when the group ends, after the work that produces
+            # their inputs and before the work that consumes their outputs
+            function delayed_fill!(buf, val, cycles)
+                start = CUDACore.clock(UInt64)
+                while CUDACore.clock(UInt64) - start < cycles
+                end
+                for j in threadIdx().x:blockDim().x:length(buf)
+                    @inbounds buf[j] = val
+                end
+                return
+            end
+            sendbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            recvbufs = map(dev -> device!(() -> CUDACore.zeros(Float64, N), dev), devs)
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @cuda threads=256 delayed_fill!(sendbufs[i], Float64(i), UInt64(1) << 28)
+                end
+            end
+            NCCL.group() do
+                for i in eachindex(devs)
+                    NCCL.Allreduce!(sendbufs[i], recvbufs[i], +, comms[i])
+                end
+            end
+            @test !device!(() -> CUDACore.isdone(stream()), devs[1])
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    recvbufs[i] .+= 1
+                end
+            end
+            for (i, dev) in enumerate(devs)
+                device!(dev) do
+                    @test all(==(sum(1:length(devs)) + 1), Array(recvbufs[i]))
+                end
+            end
         end
 
         @testset "nesting" begin
@@ -791,27 +1106,6 @@ end
             @test no_group_open()
             NCCL.destroy(comm)
 
-            # a failing NCCL call discards the queued operations. only the first rank
-            # participates in the allreduce, so submitting it would leave that rank waiting
-            # for its peers, and the following group would deadlock. this needs several
-            # ranks: NCCL executes operations on a single-rank communicator immediately,
-            # instead of queueing them.
-            if length(devs) >= 2
-                bufs = buffers()
-                @test_throws NCCL.NCCLError NCCL.group() do
-                    allreduce!(bufs, 1:1)
-                    NCCL.Broadcast!(bufs[1]..., comms[1]; root=length(devs))
-                end
-                @test no_group_open()
-                device!(devs[1]) do
-                    synchronize(stream())
-                    @test all(iszero, Array(bufs[1][2]))
-                end
-            else
-                @info "Skipping the test of discarded group operations, which needs 2 GPUs"
-                @test_skip "discarding queued operations (needs 2 GPUs)"
-            end
-
             bufs = buffers()
             NCCL.group(() -> allreduce!(bufs))
             @test check(bufs)
@@ -865,7 +1159,9 @@ end
         @testset "conversion yields" begin
             # converting a buffer to a pointer may yield (CUDACore can synchronize), during
             # which another task can open a group on this thread. the operation must notice
-            # that, rather than join the other task's group.
+            # that, rather than join the other task's group. whether converting yields is up
+            # to CUDACore, so the operation must either be rejected after a yield, or be
+            # submitted without one.
 
             # a single-rank communicator, so that joining the group would not deadlock
             comm = only(NCCL.Communicators(devs[1:1]))
@@ -875,23 +1171,44 @@ end
                 buf -> NCCL.Send(buf, comm; dest=0),
                 buf -> NCCL.Recv!(buf, comm; source=0),
             ]
-            for op in ops
-                entered = Base.Event()
-                release = Base.Event()
-                other = Ref{Task}()
-                hook = function ()
-                    # in-place operations convert the same buffer twice
-                    isassigned(other) && return
-                    other[] = @async NCCL.group() do
-                        notify(entered)
-                        wait(release)
-                    end
-                    wait(entered)
+            # (unified memory, which CUDACore currently synchronizes on the host when it is
+            # used on another stream; device memory may be handed over on the GPU instead)
+            ones_unified() = fill!(CuArray{Float64,1,CUDACore.UnifiedMemory}(undef, 4), 1)
+            # compile the operations, which would take longer than the kernel below
+            NCCL.group() do
+                for op in ops
+                    op(device!(ones_unified, devs[1]))
                 end
-                buf = device!(() -> YieldingBuffer(CUDACore.ones(Float64, 4), hook), devs[1])
-                @test_throws ConcurrencyViolationError op(buf)
+            end
+            # (outside of a group too, which submits differently; sending to or receiving
+            # from oneself does need a group)
+            for op in ops[1:2]
+                op(device!(ones_unified, devs[1]))
+            end
+            for op in ops
+                buf = device!(devs[1]) do
+                    buf = ones_unified()
+                    # the buffer is last used on another stream, after a long-running kernel,
+                    # so using it on the operation's stream has to wait for that stream
+                    busy = CuStream()
+                    @cuda stream=busy spin(buf, UInt64(1) << 29)
+                    buf
+                end
+                release = Base.Event()
+                other = @async NCCL.group(() -> wait(release))
+                outcome = try
+                    op(buf)
+                    :submitted
+                catch err
+                    err isa ConcurrencyViolationError || err isa NCCL.NCCLError || rethrow()
+                    # (sending to or receiving from oneself on its own is invalid, which
+                    # NCCL only reports once it has been passed the operation)
+                    err isa ConcurrencyViolationError ? :rejected : :submitted
+                end
+                # the other task can only have started if the operation yielded
+                @test outcome == (istaskstarted(other) ? :rejected : :submitted)
                 notify(release)
-                wait(other[])
+                wait(other)
                 @test no_group_open()
             end
             NCCL.destroy(comm)
@@ -923,6 +1240,40 @@ end
                 notify(release)
                 wait(other[])
                 @test no_group_open()
+            end
+            NCCL.destroy(comm)
+        end
+
+        @testset "other task uses a buffer during submission" begin
+            # the buffers of an operation are only converted to pointers one by one. if
+            # converting the receive buffer yields, another task can use the send buffer on
+            # another stream in the meantime. the operation must hold on to the send buffer
+            # until it has been enqueued, so that the other task's write waits for it, rather
+            # than racing with it while CUDACore believes it comes after the operation.
+            comm = only(NCCL.Communicators(devs[1:1]))
+            device!(devs[1]) do
+                s = CuStream()
+                other_stream = CuStream()
+                sendbuf = CuArray(fill(42.0, N))
+                # (unified memory, so that converting it is likely to yield; see above)
+                recvbuf = fill!(CuArray{Float64,1,CUDACore.UnifiedMemory}(undef, N), 0)
+                # the send buffer is already used by `s`, so converting it doesn't yield
+                NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+                stream!(() -> (sendbuf .= 42), s)
+                synchronize(s)
+                stream!(() -> (CUDACore.zeros(Float64, N) .= -1), other_stream)  # compile
+                # the receive buffer is used by a busy stream, so converting it may yield
+                busy = CuStream()
+                @cuda stream=busy spin(recvbuf, UInt64(1) << 29)
+
+                # if it doesn't, the other task only writes after the operation
+                other = @async stream!(other_stream) do
+                    sendbuf .= -1
+                end
+                NCCL.Allreduce!(sendbuf, recvbuf, +, comm; stream=s)
+                wait(other)
+                @test Array(recvbuf) == fill(42.0, N)
+                @test Array(sendbuf) == fill(-1.0, N)
             end
             NCCL.destroy(comm)
         end
