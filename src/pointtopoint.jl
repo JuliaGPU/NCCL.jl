@@ -17,7 +17,7 @@ function Send(sendbuf, comm::Communicator; dest::Integer,
     datatype = ncclDataType_t(eltype(sendbuf))
     comm_device = device(comm)
     _check_buffer_devices(comm_device, sendbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclSend(sendbuf, count, datatype, dest, comm, stream)
     end
     return nothing
@@ -42,7 +42,7 @@ function Recv!(recvbuf, comm::Communicator; source::Integer,
     datatype = ncclDataType_t(eltype(recvbuf))
     comm_device = device(comm)
     _check_buffer_devices(comm_device, recvbuf)
-    CUDA.device!(comm_device) do
+    CUDACore.device!(comm_device) do
         ncclRecv(recvbuf, count, datatype, source, comm, stream)
     end
     return recvbuf.data

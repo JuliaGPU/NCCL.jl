@@ -1,6 +1,6 @@
 module NCCL
 
-using CUDA, CEnum
+using CUDACore, CEnum
 
 include("libnccl.jl")
 using .LibNCCL

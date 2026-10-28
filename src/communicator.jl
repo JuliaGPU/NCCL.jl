@@ -14,7 +14,7 @@ mutable struct Communicator
 end
 
 function _buffer_device(buffer)
-    applicable(CUDA.device, buffer) && return CUDA.device(buffer)
+    applicable(CUDACore.device, buffer) && return CUDACore.device(buffer)
     if applicable(parent, buffer)
         parent_buffer = parent(buffer)
         parent_buffer === buffer || return _buffer_device(parent_buffer)
@@ -49,7 +49,7 @@ identifier for the communicator.
 
 # Examples
 ```
-comm = Communicator(length(CUDA.devices()), id, myid())
+comm = Communicator(length(CUDACore.devices()), id, myid())
 # this blocks until all other ranks have connected
 ```
 
@@ -75,7 +75,7 @@ on a single host.
 
 # Examples
 ```
-comms = NCCL.Communicators(CUDA.devices())
+comms = NCCL.Communicators(CUDACore.devices())
 ```
 
 # External links
