@@ -1096,6 +1096,187 @@ end
     @test run_script(script; timeout=300)
 end
 
+@testset "split" begin
+    # splitting the communicators of a clique one by one would deadlock
+    script = raw"""
+        using Test, CUDACore, NCCL
+
+        devs = collect(CUDACore.devices())
+        n = length(devs)
+
+        # one single-element buffer per device, holding `f(rank)`
+        onranks(f) = [device!(() -> CuArray([f(r)]), dev) for (r, dev) in zip(0:n-1, devs)]
+        fetchall(bufs) = [device!(() -> Array(buf)[], dev) for (buf, dev) in zip(bufs, devs)]
+
+        @testset "split" begin
+
+        @testset "clique" begin
+            comms = NCCL.Communicators(devs)
+
+            # by the parity of the rank
+            colors = [r % 2 for r in 0:n-1]
+            children = NCCL.split(comms, colors)
+            @test children isa Vector{Union{Communicator,Nothing}}
+            for (r, child) in zip(0:n-1, children)
+                @test isopen(child)
+                @test NCCL.device(child) == devs[r+1]
+                @test NCCL.rank(child) == r ÷ 2
+                @test NCCL.nranks(child) == count(==(r % 2), colors)
+            end
+            bufs = onranks(Float64)
+            NCCL.group() do
+                for (child, buf) in zip(children, bufs)
+                    NCCL.Allreduce!(buf, +, child)
+                end
+            end
+            @test fetchall(bufs) == [sum(filter(s -> s % 2 == r % 2, 0:n-1)) for r in 0:n-1]
+            NCCL.destroy(children)
+            @test !any(isopen, children)
+
+            # keys order the ranks
+            children = NCCL.split(comms, zeros(Int, n), [n - r for r in 0:n-1])
+            @test NCCL.rank.(children) == n-1:-1:0
+            bufs = onranks(identity)
+            NCCL.group() do
+                for (child, buf) in zip(children, bufs)
+                    NCCL.Broadcast!(buf, child; root=0)
+                end
+            end
+            @test fetchall(bufs) == fill(n - 1, n)
+            NCCL.destroy(children)
+
+            # ranks without a color get no communicator
+            children = NCCL.split(comms, [r == 0 ? nothing : 1 for r in 0:n-1])
+            @test children[1] === nothing
+            for (r, child) in zip(1:n-1, children[2:end])
+                @test NCCL.rank(child) == r - 1
+                @test NCCL.nranks(child) == n - 1
+            end
+            NCCL.destroy(children)
+            @test all(c -> c === nothing || !isopen(c), children)
+
+            # do-block
+            local escaped
+            ret = NCCL.split(comms, zeros(Int, n)) do children
+                escaped = children
+                @test all(isopen, children)
+                42
+            end
+            @test ret == 42
+            @test !any(isopen, escaped)
+
+            # the parent is still usable
+            bufs = onranks(Float64)
+            NCCL.group() do
+                for (comm, buf) in zip(comms, bufs)
+                    NCCL.Allreduce!(buf, +, comm)
+                end
+            end
+            @test fetchall(bufs) == fill(sum(0:n-1), n)
+
+            # invalid arguments
+            @test_throws ArgumentError NCCL.split(comms, [r == 0 ? -1 : 0 for r in 0:n-1])
+            @test_throws DimensionMismatch NCCL.split(comms, zeros(Int, n + 1))
+            @test_throws DimensionMismatch NCCL.split(comms, zeros(Int, n), zeros(Int, n + 1))
+            @test_throws ArgumentError NCCL.split([comms[1], comms[1]], [0, 0])
+            err = try
+                NCCL.group(() -> NCCL.split(comms, zeros(Int, n)))
+            catch err
+                err
+            end
+            @test err isa ArgumentError && occursin("inside NCCL.group", err.msg)
+            @test_throws ArgumentError NCCL.group(() -> NCCL.split(comms[1], 0))
+            @test all(isopen, comms)
+
+            NCCL.destroy(comms)
+            @test_throws InvalidStateException NCCL.split(comms, zeros(Int, n))
+            @test_throws InvalidStateException NCCL.split(comms[1], 0)
+        end
+
+        @testset "single rank" begin
+            comm = Communicator(1, 0, NCCL.UniqueID())
+
+            child = NCCL.split(comm, 0)
+            @test isopen(child)
+            @test NCCL.rank(child) == 0
+            @test NCCL.nranks(child) == 1
+            @test NCCL.device(child) == NCCL.device(comm)
+            buf = CuArray([1.0])
+            NCCL.Allreduce!(buf, +, child)
+            @test Array(buf) == [1.0]
+            NCCL.destroy(child)
+
+            @test NCCL.split(comm, nothing) === nothing
+            ret = NCCL.split(comm, nothing) do child
+                @test child === nothing
+                42
+            end
+            @test ret == 42
+            @test_throws ArgumentError NCCL.split(comm, -1)
+
+            local escaped
+            NCCL.split(comm, 1, 0) do child
+                escaped = child
+                @test isopen(child)
+            end
+            @test !isopen(escaped)
+
+            # aborted when the body throws
+            @test_throws ErrorException("inner") NCCL.split(comm, 0) do child
+                escaped = child
+                error("inner")
+            end
+            @test !isopen(escaped)
+
+            NCCL.destroy(comm)
+            @test_throws InvalidStateException NCCL.split(comm, 0)
+        end
+
+        @testset "configuration" begin
+            # the configuration (and its strings, which NCCL refers to) is kept alive by the
+            # child, also when it is inherited from a parent that is destroyed first
+            comm = Communicator(1, 0, NCCL.UniqueID();
+                                config=NCCL.Config(comm_name=string("parent", rand(1:9))))
+            inherited = NCCL.split(comm, 0)
+            child = NCCL.split(comm, 0; config=NCCL.Config(comm_name=string("child", rand(1:9)),
+                                                         max_ctas=2))
+            NCCL.destroy(comm)
+            GC.gc(true)
+            for c in (inherited, child)
+                buf = CuArray([1.0])
+                NCCL.Allreduce!(buf, +, c)
+                @test Array(buf) == [1.0]
+            end
+            NCCL.destroy([inherited, child])
+
+            # splitting a parent that shares its resources
+            comm = Communicator(1, 0, NCCL.UniqueID(); config=NCCL.Config(split_share=true))
+            child = NCCL.split(comm, 0)
+            buf = CuArray([1.0])
+            NCCL.Allreduce!(buf, +, child)
+            NCCL.Allreduce!(buf, +, comm)
+            @test Array(buf) == [1.0]
+            NCCL.destroy(child)
+            NCCL.destroy(comm)
+        end
+
+        @testset "nonblocking" begin
+            comm = Communicator(1, 0, NCCL.UniqueID())
+            ENV["NCCL_COMM_BLOCKING"] = "0"
+            try
+                @test_throws ErrorException NCCL.split(comm, 0)
+            finally
+                ENV["NCCL_COMM_BLOCKING"] = "1"
+            end
+            @test isopen(comm)
+            NCCL.destroy(comm)
+        end
+
+        end
+        """
+    @test run_script(script; timeout=300)
+end
+
 @testset "UniqueID" begin
     id = NCCL.UniqueID()
     @test isbitstype(NCCL.UniqueID)
@@ -1335,6 +1516,57 @@ if length(CUDACore.devices()) >= 2
         # the collective was cancelled (a hang here is caught by the watchdog)
         synchronize()
         @test CUDACore.isdone(stream())
+        """, nranks)
+
+    # splitting communicators of several processes; the last rank (of 3 or more) doesn't take
+    # part in a new communicator, and keys reverse the order of the ranks
+    @test run_ranks("""
+        comm = Communicator(nranks, rank, id)
+        color(r) = nranks > 2 && r == nranks - 1 ? nothing : r % 2
+        members = [r for r in 0:nranks-1 if color(r) == color(rank)]
+
+        child = NCCL.split(comm, color(rank), nranks - rank)
+        if color(rank) === nothing
+            @test child === nothing
+        else
+            @test NCCL.nranks(child) == length(members)
+            @test NCCL.rank(child) == findfirst(==(rank), reverse(members)) - 1
+            @test NCCL.device(child) == NCCL.device(comm)
+            buf = CuArray([Float64(rank)])
+            NCCL.Allreduce!(buf, +, child)
+            @test Array(buf) == [sum(members)]
+            # rank 0 of the child is the highest rank of the parent
+            buf = CuArray([rank])
+            NCCL.Broadcast!(buf, child; root=0)
+            @test Array(buf) == [maximum(members)]
+        end
+
+        # the parent is not affected
+        buf = CuArray([1.0])
+        NCCL.Allreduce!(buf, +, comm)
+        @test Array(buf) == [nranks]
+
+        # destroying the parent first
+        NCCL.destroy(comm)
+        if child !== nothing
+            buf = CuArray([1.0])
+            NCCL.Allreduce!(buf, +, child)
+            @test Array(buf) == [length(members)]
+        end
+        NCCL.destroy(child)
+        @test_throws InvalidStateException NCCL.split(comm, 0)
+        """, nranks)
+
+    # do-block, with an explicit configuration
+    @test run_ranks("""
+        Communicator(nranks, rank, id) do comm
+            NCCL.split(comm, 0; config=NCCL.Config(comm_name="child")) do child
+                @test NCCL.rank(child) == rank
+                buf = CuArray([1.0])
+                NCCL.Allreduce!(buf, +, child)
+                @test Array(buf) == [nranks]
+            end
+        end
         """, nranks)
 end
 else

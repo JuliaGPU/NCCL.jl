@@ -58,6 +58,7 @@ NCCLError
 ```@docs
 Communicator
 Communicators
+split
 UniqueID
 Config
 rank(comm::Communicator)

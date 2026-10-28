@@ -146,10 +146,10 @@ end
 
 # destroying or aborting a communicator inside a group would only take effect when the group
 # ends, while the communicator would already be marked as closed
-function check_no_group(f)
+function check_no_group(f, hint="")
     check_group_owner()
     group_state() === nothing ||
-        throw(ArgumentError("NCCL.$f cannot be called inside NCCL.group"))
+        throw(ArgumentError("NCCL.$f cannot be called inside NCCL.group$hint"))
     return
 end
 
@@ -172,6 +172,9 @@ Destroy the communicator `comm` (or all communicators in `comms`), after waiting
 outstanding operations to complete. Afterwards, the communicator is closed and can no
 longer be used. Destroying a closed communicator does nothing.
 
+`nothing`, which [`NCCL.split`](@ref) returns for ranks that are not part of a new
+communicator, is ignored.
+
 This first finalizes the communicator (`ncclCommFinalize`), which flushes its outstanding
 operations and synchronizes with the other ranks, and then frees its local resources
 (`ncclCommDestroy`). Finalization is an intra-node collective operation: all ranks on the
@@ -188,6 +191,8 @@ This function must not be called inside [`NCCL.group`](@ref).
 - [`ncclCommFinalize`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommfinalize)
 - [`ncclCommDestroy`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommdestroy)
 """
+destroy(::Nothing) = nothing
+
 function destroy(comm::Communicator)
     isopen(comm) || return
     check_no_group(:destroy)
@@ -195,9 +200,9 @@ function destroy(comm::Communicator)
     release(ncclCommDestroy, comm)
 end
 
-function destroy(comms::AbstractVector{Communicator})
+function destroy(comms::AbstractVector{<:Union{Communicator,Nothing}})
     # finalizing a communicator twice in the same group would fail or hang
-    comms = unique(filter(isopen, comms))
+    comms = unique(Communicator[comm for comm in comms if comm !== nothing && isopen(comm)])
     isempty(comms) && return
     check_no_group(:destroy)
     group() do
@@ -214,6 +219,7 @@ end
 Abort the communicator `comm` (or all communicators in `comms`): cancel its uncompleted
 operations and free its resources. Afterwards, the communicator is closed and can no longer
 be used. Aborting a closed communicator does nothing.
+`nothing` is ignored, as with [`NCCL.destroy`](@ref).
 
 This is meant to release a communicator after an error. It does not wait for outstanding
 operations or synchronize with the other ranks, but NCCL expects every rank to abort its
@@ -227,13 +233,15 @@ This function must not be called inside [`NCCL.group`](@ref).
 - [`ncclCommAbort`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommabort)
 - [Fault tolerance](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/communicators.html#fault-tolerance)
 """
+abort(::Nothing) = nothing
+
 function abort(comm::Communicator)
     isopen(comm) || return
     check_no_group(:abort)
     release(ncclCommAbort, comm)
 end
 
-function abort(comms::AbstractVector{Communicator})
+function abort(comms::AbstractVector{<:Union{Communicator,Nothing}})
     # abort as many communicators as possible, even if some fail
     err = nothing
     for comm in comms
@@ -414,6 +422,165 @@ end
 
 function Communicators(f, devices; kwargs...)
     with_communicators(f, Communicators(devices; kwargs...))
+end
+
+
+## splitting
+
+function split_color(color::Integer)
+    c = Cint(color)
+    c >= 0 || throw(ArgumentError(
+        "color must be non-negative, got $color; use `nothing` for ranks that should not be part of a new communicator"))
+    return c
+end
+split_color(::Nothing) = Cint(LibNCCL.NCCL_SPLIT_NOCOLOR)
+
+# The rank and number of ranks of a communicator created by `ncclCommSplit`, or `nothing` if
+# the split did not create one.
+function split_info(handle::ncclComm_t)
+    handle == C_NULL && return nothing
+    rank = Ref{Cint}()
+    nranks = Ref{Cint}()
+    ncclCommUserRank(handle, rank)
+    ncclCommCount(handle, nranks)
+    return rank[], nranks[]
+end
+
+# A communicator created by `ncclCommSplit`. When no configuration is given, the child copies
+# that of the parent, including the pointers to its strings, so it keeps the parent's
+# configuration alive: the child can outlive the parent.
+function split_child(parent::Communicator, handle::ncclComm_t, info, config)
+    info === nothing && return nothing
+    rank, nranks = info
+    return Communicator(handle, parent.device, rank, nranks,
+                        config === nothing ? parent.config : config)
+end
+
+const split_group_hint =
+    "; split several communicators driven by the same task together, by passing vectors to NCCL.split"
+
+"""
+    NCCL.split(comm::Communicator, color, key=NCCL.rank(comm);
+               config=nothing) :: Union{Communicator,Nothing}
+    NCCL.split(comms::AbstractVector{Communicator}, colors, keys=NCCL.rank.(comms);
+               config=nothing) :: Vector{Union{Communicator,Nothing}}
+    NCCL.split(f, comm, color, key; config)
+    NCCL.split(f, comms, colors, keys; config)
+
+Split the communicator `comm` into new communicators: the ranks that pass the same `color`
+(a non-negative integer) form a new communicator, in which they are ordered by `key` (ranks
+with equal keys keep the order they have in `comm`). Ranks that pass `nothing` as color
+don't take part in any new communicator, and get `nothing` back. The new communicators use
+the same devices as `comm`.
+
+This is a collective operation: every rank of `comm` has to call `NCCL.split`, even the ones
+that pass `nothing`, and the call blocks until all of them have. A task that drives several
+ranks of `comm`, e.g. the communicators returned by [`Communicators`](@ref), has to split
+them together by passing vectors of communicators, colors and keys, which splits them in a
+single group; splitting them one by one deadlocks. `NCCL.split` cannot be called inside
+[`NCCL.group`](@ref).
+
+There must not be any outstanding operations on `comm` when it is split, or the split may
+deadlock: wait for the operations issued on `comm` to complete first (e.g. by synchronizing
+the streams they were issued on).
+
+The new communicators use the configuration `config` (an [`NCCL.Config`](@ref)). Without it,
+they inherit the configuration of `comm`. If `comm` was created with `split_share=true`, the
+new communicators share resources with it: then `comm` and the new communicators must not be
+used concurrently, and aborting one of them can make the others unusable.
+
+The new communicators are independent of `comm`, and need to be destroyed separately (see
+[`NCCL.destroy`](@ref)), before or after `comm`. With the do-block forms, they are passed to
+`f`, and destroyed when `f` returns, or aborted if it throws (see [`Communicator`](@ref)).
+
+If the split fails, any new communicator that NCCL created is aborted before the error is
+thrown.
+
+# Examples
+```julia
+# split the ranks of `comm` in two halves
+n = NCCL.nranks(comm)
+half = NCCL.split(comm, NCCL.rank(comm) < n ÷ 2 ? 0 : 1)
+
+# a communicator with only the even ranks of a clique
+NCCL.Communicators(CUDACore.devices()) do comms
+    NCCL.split(comms, [isodd(NCCL.rank(c)) ? nothing : 0 for c in comms]) do evens
+        ...
+    end
+end
+```
+
+# External links
+- [`ncclCommSplit`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/comms.html#ncclcommsplit)
+- [Creating more communicators](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/communicators.html#creating-more-communicators)
+"""
+function split(comm::Communicator, color::Union{Integer,Nothing}, key::Integer=comm.rank;
+               config::Union{Config,Nothing}=nothing)
+    check_open(comm)
+    color = split_color(color)
+    key = Cint(key)
+    check_blocking()
+    raw_config = config === nothing ? nothing : Ref(ncclConfig_t(config))
+    handle_ref = Ref{ncclComm_t}(C_NULL)
+    info = GC.@preserve config raw_config try
+        CUDACore.device!(comm.device) do
+            check_no_group(:split, split_group_hint)
+            ncclCommSplit(comm, color, key, handle_ref, something(raw_config, C_NULL))
+        end
+        split_info(handle_ref[])
+    catch
+        abort_failed((handle_ref[],))
+        rethrow()
+    end
+    return split_child(comm, handle_ref[], info, config)
+end
+
+function split(comms::AbstractVector{Communicator},
+               colors::AbstractVector{<:Union{Integer,Nothing}},
+               keys::AbstractVector{<:Integer}=map(rank, comms);
+               config::Union{Config,Nothing}=nothing)
+    comms = collect(comms)
+    n = length(comms)
+    length(colors) == n || throw(DimensionMismatch(
+        "expected a color for each of the $n communicators, got $(length(colors))"))
+    length(keys) == n || throw(DimensionMismatch(
+        "expected a key for each of the $n communicators, got $(length(keys))"))
+    # each communicator would take part in the split twice, which deadlocks
+    length(Base.IdSet{Communicator}(comms)) == n ||
+        throw(ArgumentError("cannot split the same communicator twice"))
+    foreach(check_open, comms)
+    colors = Cint[split_color(color) for color in colors]
+    keys = Cint[key for key in keys]
+    check_blocking()
+    # inside another group, the splits would only happen when that group ends
+    check_no_group(:split, split_group_hint)
+    raw_config = config === nothing ? nothing : Ref(ncclConfig_t(config))
+    handles = fill(ncclComm_t(C_NULL), n)
+    infos = GC.@preserve config raw_config handles try
+        group() do
+            for (i, comm) in enumerate(comms)
+                CUDACore.device!(comm.device) do
+                    ncclCommSplit(comm, colors[i], keys[i], pointer(handles, i),
+                                  something(raw_config, C_NULL))
+                end
+            end
+        end
+        map(split_info, handles)
+    catch
+        abort_failed(handles)
+        rethrow()
+    end
+    return Union{Communicator,Nothing}[split_child(comms[i], handles[i], infos[i], config)
+                                       for i in 1:n]
+end
+
+function split(f, comm::Communicator, color::Union{Integer,Nothing}, args...; kwargs...)
+    with_communicators(f, split(comm, color, args...; kwargs...))
+end
+
+function split(f, comms::AbstractVector{Communicator},
+               colors::AbstractVector{<:Union{Integer,Nothing}}, args...; kwargs...)
+    with_communicators(f, split(comms, colors, args...; kwargs...))
 end
 
 
