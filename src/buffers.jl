@@ -39,6 +39,18 @@ function check_buffer(comm::Communicator, buf, name)
     return
 end
 
+# Some operations ignore a buffer on all ranks but the root, so other ranks can pass `nothing`
+# instead. Returns whether the buffer was passed.
+function check_root_buffer(comm::Communicator, buf, name, root::Cint)
+    if buf === nothing
+        comm.rank == root && throw(ArgumentError(
+            "$name is required on the root rank, but `nothing` was passed"))
+        return false
+    end
+    check_buffer(comm, buf, name)
+    return true
+end
+
 function check_eltypes(sendbuf, recvbuf)
     if eltype(sendbuf) != eltype(recvbuf)
         throw(ArgumentError(
@@ -54,6 +66,16 @@ function check_length(buf, len, name)
     return
 end
 
+# The length of the blocks that `buf` consists of, one for every rank.
+function block_length(comm::Communicator, buf, name)
+    len, rem = divrem(length(buf), comm.nranks)
+    if rem != 0
+        throw(DimensionMismatch(
+            "$name must consist of a block for each of the $(comm.nranks) ranks, but its length $(length(buf)) is not a multiple of $(comm.nranks)"))
+    end
+    return len
+end
+
 # validate a root or peer rank, after converting it to its C type
 function check_peer(comm::Communicator, peer::Cint, name)
     if !(0 <= peer < comm.nranks)
@@ -64,17 +86,22 @@ end
 
 # Operations work either on disjoint buffers, or in place: NCCL then expects the send buffer
 # to start `inplace_offset` bytes after the start of the receive buffer, as described by
-# `inplace` (only the layouts that NCCL documents for each operation are valid). This needs
-# the addresses of the buffers, so it is checked during `submit`.
+# `inplace` (only the layouts that NCCL documents for each operation are valid; `nothing`
+# for operations that can't be performed in place). This needs the addresses of the buffers,
+# so it is checked during `submit`.
 function check_overlap(sendptr::CuPtr, sendbuf, recvptr::CuPtr, recvbuf;
                        inplace_offset::Int=0,
-                       inplace::String="sendbuf and recvbuf must be the same")
+                       inplace::Union{String,Nothing}="sendbuf and recvbuf must be the same")
     sendbytes = length(sendbuf) * Base.elsize(sendbuf)
     recvbytes = length(recvbuf) * Base.elsize(recvbuf)
     (sendbytes == 0 || recvbytes == 0) && return
     sendstart, recvstart = UInt(sendptr), UInt(recvptr)
     disjoint = sendstart >= recvstart + recvbytes || recvstart >= sendstart + sendbytes
     disjoint && return
+    if inplace === nothing
+        throw(ArgumentError(
+            "sendbuf and recvbuf overlap; they must be disjoint, as this operation cannot be performed in place"))
+    end
     reinterpret(Int, sendstart - recvstart) == inplace_offset && return
     throw(ArgumentError(
         "sendbuf and recvbuf overlap; they must be disjoint, or for an in-place operation, $inplace"))

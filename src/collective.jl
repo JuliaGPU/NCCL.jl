@@ -46,8 +46,9 @@ end
 
 Copy `sendbuf` on rank `root` to `recvbuf` on all ranks. Returns `recvbuf`.
 
-`sendbuf` and `recvbuf` must have the same element type and length; `sendbuf` is only read
-on the root. With a single buffer `sendrecvbuf`, the operation is performed in place.
+`sendbuf` and `recvbuf` must have the same element type and length. `sendbuf` is only read
+on the root: other ranks can pass `nothing` instead. With a single buffer `sendrecvbuf`, the
+operation is performed in place.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -60,15 +61,18 @@ used until then.
 """
 function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
                     stream::Union{CuStream,Nothing}=nothing)
-    check_buffer(comm, sendbuf, "sendbuf")
-    check_buffer(comm, recvbuf, "recvbuf")
-    check_eltypes(sendbuf, recvbuf)
-    check_length(sendbuf, length(recvbuf), "sendbuf")
-    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
     root = Cint(root)
     check_peer(comm, root, "root")
+    check_buffer(comm, recvbuf, "recvbuf")
+    has_sendbuf = check_root_buffer(comm, sendbuf, "sendbuf", root)
+    if has_sendbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(sendbuf, length(recvbuf), "sendbuf")
+    end
+    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
+    # NCCL ignores the send buffer of non-root ranks, and accepts a null pointer there
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
-        check_overlap(sendptr, sendbuf, recvptr, recvbuf)
+        has_sendbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf)
         ncclBroadcast(sendptr, recvptr, count, data_type, root, comm_handle, stream_handle)
     end
     return recvbuf
@@ -89,9 +93,9 @@ Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
 or) and `min` (logical and).
 
-`sendbuf` and `recvbuf` must have the same element type and length; `recvbuf` is only
-written on the root. With a single buffer `sendrecvbuf`, the operation is performed in
-place.
+`sendbuf` and `recvbuf` must have the same element type and length. `recvbuf` is only
+written on the root: other ranks can pass `nothing` instead. With a single buffer
+`sendrecvbuf`, the operation is performed in place.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -104,15 +108,18 @@ used until then.
 """
 function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
                  stream::Union{CuStream,Nothing}=nothing)
-    check_buffer(comm, sendbuf, "sendbuf")
-    check_buffer(comm, recvbuf, "recvbuf")
-    check_eltypes(sendbuf, recvbuf)
-    check_length(sendbuf, length(recvbuf), "sendbuf")
-    data_type, count, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
     root = Cint(root)
     check_peer(comm, root, "root")
+    check_buffer(comm, sendbuf, "sendbuf")
+    has_recvbuf = check_root_buffer(comm, recvbuf, "recvbuf", root)
+    if has_recvbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(recvbuf, length(sendbuf), "recvbuf")
+    end
+    data_type, count, _op = lower_reduction(eltype(sendbuf), length(sendbuf), op)
+    # NCCL ignores the receive buffer of non-root ranks, and accepts a null pointer there
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
-        check_overlap(sendptr, sendbuf, recvptr, recvbuf)
+        has_recvbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf)
         ncclReduce(sendptr, recvptr, count, data_type, _op, root, comm_handle, stream_handle)
     end
     return recvbuf
@@ -126,13 +133,16 @@ end
 """
     NCCL.Allgather!(sendbuf, recvbuf, comm::Communicator;
                     stream::Union{CuStream,Nothing} = nothing)
+    NCCL.Allgather!(recvbuf, comm::Communicator; stream)
 
 Concatenate `sendbuf` from each rank, in rank order, into `recvbuf` on all ranks. Returns
 `recvbuf`.
 
 `sendbuf` and `recvbuf` must have the same element type, and `recvbuf` must have
 `nranks(comm)` times as many elements as `sendbuf`. The operation is performed in place
-when `sendbuf` is the part of `recvbuf` that receives the data of this rank.
+when `sendbuf` is the part of `recvbuf` that receives the data of this rank. With only
+`recvbuf`, that part is sent: `recvbuf` then consists of `nranks(comm)` blocks of equal
+length, and on rank `i` (counting from 0) the `i`-th block holds the data to send.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -159,9 +169,22 @@ function Allgather!(sendbuf, recvbuf, comm::Communicator;
     return recvbuf
 end
 
+function Allgather!(recvbuf, comm::Communicator; stream::Union{CuStream,Nothing}=nothing)
+    check_buffer(comm, recvbuf, "recvbuf")
+    sendlen = block_length(comm, recvbuf, "recvbuf")
+    data_type, sendcount = lower_movement(eltype(recvbuf), sendlen)
+    offset = comm.rank * sendlen * Base.elsize(recvbuf)
+    submit(comm, stream, recvbuf) do recvptr, comm_handle, stream_handle
+        ncclAllGather(recvptr + offset, recvptr, sendcount, data_type, comm_handle,
+                      stream_handle)
+    end
+    return recvbuf
+end
+
 """
     NCCL.ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
                         stream::Union{CuStream,Nothing} = nothing)
+    NCCL.ReduceScatter!(sendrecvbuf, op, comm::Communicator; stream) -> view
 
 Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 [`NCCL.avg`](@ref)), and scatter the result over the ranks: `recvbuf` on rank `i` receives
@@ -171,7 +194,10 @@ only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical or) and
 
 `sendbuf` and `recvbuf` must have the same element type, and `sendbuf` must have
 `nranks(comm)` times as many elements as `recvbuf`. The operation is performed in place
-when `recvbuf` is the block of `sendbuf` for this rank.
+when `recvbuf` is the block of `sendbuf` for this rank. With a single buffer `sendrecvbuf`,
+which consists of `nranks(comm)` blocks of equal length, the result for this rank is
+written to its own block, and a view of that block is returned; the other blocks are left
+in an undefined state.
 
 The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
 a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
@@ -195,6 +221,145 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
                       inplace="recvbuf must be the block of sendbuf for this rank")
         ncclReduceScatter(sendptr, recvptr, recvcount, data_type, _op, comm_handle,
                           stream_handle)
+    end
+    return recvbuf
+end
+
+function ReduceScatter!(sendrecvbuf, op, comm::Communicator;
+                        stream::Union{CuStream,Nothing}=nothing)
+    check_buffer(comm, sendrecvbuf, "sendrecvbuf")
+    recvlen = block_length(comm, sendrecvbuf, "sendrecvbuf")
+    data_type, recvcount, _op = lower_reduction(eltype(sendrecvbuf), recvlen, op)
+    offset = comm.rank * recvlen * Base.elsize(sendrecvbuf)
+    submit(comm, stream, sendrecvbuf) do sendptr, comm_handle, stream_handle
+        ncclReduceScatter(sendptr, sendptr + offset, recvcount, data_type, _op, comm_handle,
+                          stream_handle)
+    end
+    return view(sendrecvbuf, comm.rank*recvlen+1:(comm.rank+1)*recvlen)
+end
+
+"""
+    NCCL.Alltoall!(sendbuf, recvbuf, comm::Communicator;
+                   stream::Union{CuStream,Nothing} = nothing)
+
+Exchange blocks of data between all ranks: `sendbuf` and `recvbuf` are divided into
+`nranks(comm)` blocks of equal length, and the `j`-th block of `sendbuf` on rank `i` is
+copied to the `i`-th block of `recvbuf` on rank `j` (counting from 0). Returns `recvbuf`.
+
+`sendbuf` and `recvbuf` must have the same element type and length, which must be a
+multiple of `nranks(comm)`. The operation cannot be performed in place: the buffers must not
+overlap.
+
+The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
+a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
+the task's stream on that device, and is ordered like other work on that stream. Inside an
+[`NCCL.group`](@ref), it is only enqueued when the group ends, and its buffers must not be
+used until then.
+
+# External links
+- [`ncclAlltoAll`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclalltoall)
+"""
+function Alltoall!(sendbuf, recvbuf, comm::Communicator;
+                   stream::Union{CuStream,Nothing}=nothing)
+    check_buffer(comm, sendbuf, "sendbuf")
+    check_buffer(comm, recvbuf, "recvbuf")
+    check_eltypes(sendbuf, recvbuf)
+    check_length(sendbuf, length(recvbuf), "sendbuf")
+    blocklen = block_length(comm, recvbuf, "recvbuf")
+    data_type, count = lower_movement(eltype(recvbuf), blocklen)
+    submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace=nothing)
+        ncclAlltoAll(sendptr, recvptr, count, data_type, comm_handle, stream_handle)
+    end
+    return recvbuf
+end
+
+"""
+    NCCL.Gather!(sendbuf, recvbuf, comm::Communicator; root::Integer = 0,
+                 stream::Union{CuStream,Nothing} = nothing)
+
+Concatenate `sendbuf` from each rank, in rank order, into `recvbuf` on rank `root`. Returns
+`recvbuf`.
+
+`sendbuf` and `recvbuf` must have the same element type, and `recvbuf` must have
+`nranks(comm)` times as many elements as `sendbuf`. `recvbuf` is only written on the root:
+other ranks can pass `nothing` instead. The operation is performed in place when `sendbuf` is
+the part of `recvbuf` that receives the data of the root, e.g.
+`view(recvbuf, root*n+1:(root+1)*n)` for buffers of `n` elements.
+
+The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
+a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
+the task's stream on that device, and is ordered like other work on that stream. Inside an
+[`NCCL.group`](@ref), it is only enqueued when the group ends, and its buffers must not be
+used until then.
+
+# External links
+- [`ncclGather`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclgather)
+"""
+function Gather!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
+                 stream::Union{CuStream,Nothing}=nothing)
+    root = Cint(root)
+    check_peer(comm, root, "root")
+    check_buffer(comm, sendbuf, "sendbuf")
+    has_recvbuf = check_root_buffer(comm, recvbuf, "recvbuf", root)
+    if has_recvbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(recvbuf, length(sendbuf) * comm.nranks, "recvbuf")
+    end
+    data_type, count = lower_movement(eltype(sendbuf), length(sendbuf))
+    inplace_offset = root * length(sendbuf) * Base.elsize(sendbuf)
+    # NCCL ignores the receive buffer of non-root ranks, but rejects a null pointer there
+    # when checking arguments (`NCCL_CHECK_MODE`); pass the send buffer instead
+    recvarg = something(recvbuf, sendbuf)
+    submit(comm, stream, sendbuf, recvarg) do sendptr, recvptr, comm_handle, stream_handle
+        has_recvbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace_offset,
+                                     inplace="sendbuf must be the part of recvbuf for the root")
+        ncclGather(sendptr, recvptr, count, data_type, root, comm_handle, stream_handle)
+    end
+    return recvbuf
+end
+
+"""
+    NCCL.Scatter!(sendbuf, recvbuf, comm::Communicator; root::Integer = 0,
+                  stream::Union{CuStream,Nothing} = nothing)
+
+Divide `sendbuf` on rank `root` into `nranks(comm)` blocks of equal length, and copy the
+`i`-th block to `recvbuf` on rank `i` (counting from 0). Returns `recvbuf`.
+
+`sendbuf` and `recvbuf` must have the same element type, and `sendbuf` must have
+`nranks(comm)` times as many elements as `recvbuf`. `sendbuf` is only read on the root: other
+ranks can pass `nothing` instead. The operation is performed in place when `recvbuf` is the
+block of `sendbuf` for the root, e.g. `view(sendbuf, root*n+1:(root+1)*n)` for blocks of `n`
+elements.
+
+The buffers must be stored contiguously in memory of the device of `comm`: a `CuArray`, or
+a contiguous view or reshape of one. The operation is enqueued on `stream`, which defaults to
+the task's stream on that device, and is ordered like other work on that stream. Inside an
+[`NCCL.group`](@ref), it is only enqueued when the group ends, and its buffers must not be
+used until then.
+
+# External links
+- [`ncclScatter`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclscatter)
+"""
+function Scatter!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
+                  stream::Union{CuStream,Nothing}=nothing)
+    root = Cint(root)
+    check_peer(comm, root, "root")
+    check_buffer(comm, recvbuf, "recvbuf")
+    has_sendbuf = check_root_buffer(comm, sendbuf, "sendbuf", root)
+    if has_sendbuf
+        check_eltypes(sendbuf, recvbuf)
+        check_length(sendbuf, length(recvbuf) * comm.nranks, "sendbuf")
+    end
+    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
+    inplace_offset = -root * length(recvbuf) * Base.elsize(recvbuf)
+    # NCCL ignores the send buffer of non-root ranks, but rejects a null pointer there when
+    # checking arguments (`NCCL_CHECK_MODE`); pass the receive buffer instead
+    sendarg = something(sendbuf, recvbuf)
+    submit(comm, stream, sendarg, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
+        has_sendbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace_offset,
+                                     inplace="recvbuf must be the block of sendbuf for the root")
+        ncclScatter(sendptr, recvptr, count, data_type, root, comm_handle, stream_handle)
     end
     return recvbuf
 end
