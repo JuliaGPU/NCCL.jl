@@ -3,10 +3,10 @@
                     stream::Union{CuStream,Nothing} = nothing)
     NCCL.Allreduce!(sendrecvbuf, op, comm::Communicator; stream)
 
-Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
-[`NCCL.avg`](@ref)), and write the result to `recvbuf` on all ranks. Returns `recvbuf`.
-Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
-or) and `min` (logical and).
+Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`,
+[`NCCL.avg`](@ref), or an [`NCCL.PreMulSum`](@ref)), and write the result to `recvbuf` on all
+ranks. Returns `recvbuf`. Complex numbers can only be reduced with `+`, `NCCL.avg` and
+`NCCL.PreMulSum`, and `Bool`s with `max` (logical or) and `min` (logical and).
 
 `sendbuf` and `recvbuf` must have the same element type and length. With a single buffer
 `sendrecvbuf`, the operation is performed in place.
@@ -29,7 +29,10 @@ function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
     data_type, count, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         check_overlap(sendptr, sendbuf, recvptr, recvbuf)
-        ncclAllReduce(sendptr, recvptr, count, data_type, _op, comm_handle, stream_handle)
+        with_reduction_op(_op, data_type, comm_handle) do redop
+            ncclAllReduce(sendptr, recvptr, count, data_type, redop, comm_handle,
+                          stream_handle)
+        end
     end
     return recvbuf
 end
@@ -88,10 +91,10 @@ end
                  stream::Union{CuStream,Nothing} = nothing)
     NCCL.Reduce!(sendrecvbuf, op, comm::Communicator; root, stream)
 
-Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
-[`NCCL.avg`](@ref)), and write the result to `recvbuf` on rank `root`. Returns `recvbuf`.
-Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
-or) and `min` (logical and).
+Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`,
+[`NCCL.avg`](@ref), or an [`NCCL.PreMulSum`](@ref)), and write the result to `recvbuf` on rank
+`root`. Returns `recvbuf`. Complex numbers can only be reduced with `+`, `NCCL.avg` and
+`NCCL.PreMulSum`, and `Bool`s with `max` (logical or) and `min` (logical and).
 
 `sendbuf` and `recvbuf` must have the same element type and length. `recvbuf` is only
 written on the root: other ranks can pass `nothing` instead. With a single buffer
@@ -120,7 +123,10 @@ function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
     # NCCL ignores the receive buffer of non-root ranks, and accepts a null pointer there
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         has_recvbuf && check_overlap(sendptr, sendbuf, recvptr, recvbuf)
-        ncclReduce(sendptr, recvptr, count, data_type, _op, root, comm_handle, stream_handle)
+        with_reduction_op(_op, data_type, comm_handle) do redop
+            ncclReduce(sendptr, recvptr, count, data_type, redop, root, comm_handle,
+                       stream_handle)
+        end
     end
     return recvbuf
 end
@@ -186,11 +192,11 @@ end
                         stream::Union{CuStream,Nothing} = nothing)
     NCCL.ReduceScatter!(sendrecvbuf, op, comm::Communicator; stream) -> view
 
-Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
-[`NCCL.avg`](@ref)), and scatter the result over the ranks: `recvbuf` on rank `i` receives
-the `i`-th block of the result (counting from 0). Returns `recvbuf`. Complex numbers can
-only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical or) and `min`
-(logical and).
+Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`,
+[`NCCL.avg`](@ref), or an [`NCCL.PreMulSum`](@ref)), and scatter the result over the ranks:
+`recvbuf` on rank `i` receives the `i`-th block of the result (counting from 0). Returns
+`recvbuf`. Complex numbers can only be reduced with `+`, `NCCL.avg` and `NCCL.PreMulSum`,
+and `Bool`s with `max` (logical or) and `min` (logical and).
 
 `sendbuf` and `recvbuf` must have the same element type, and `sendbuf` must have
 `nranks(comm)` times as many elements as `recvbuf`. The operation is performed in place
@@ -219,8 +225,10 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace_offset,
                       inplace="recvbuf must be the block of sendbuf for this rank")
-        ncclReduceScatter(sendptr, recvptr, recvcount, data_type, _op, comm_handle,
-                          stream_handle)
+        with_reduction_op(_op, data_type, comm_handle) do redop
+            ncclReduceScatter(sendptr, recvptr, recvcount, data_type, redop, comm_handle,
+                              stream_handle)
+        end
     end
     return recvbuf
 end
@@ -232,8 +240,10 @@ function ReduceScatter!(sendrecvbuf, op, comm::Communicator;
     data_type, recvcount, _op = lower_reduction(eltype(sendrecvbuf), recvlen, op)
     offset = comm.rank * recvlen * Base.elsize(sendrecvbuf)
     submit(comm, stream, sendrecvbuf) do sendptr, comm_handle, stream_handle
-        ncclReduceScatter(sendptr, sendptr + offset, recvcount, data_type, _op, comm_handle,
-                          stream_handle)
+        with_reduction_op(_op, data_type, comm_handle) do redop
+            ncclReduceScatter(sendptr, sendptr + offset, recvcount, data_type, redop,
+                              comm_handle, stream_handle)
+        end
     end
     return view(sendrecvbuf, comm.rank*recvlen+1:(comm.rank+1)*recvlen)
 end

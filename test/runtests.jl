@@ -601,6 +601,185 @@ end
     NCCL.destroy(comms)
 end
 
+@testset "PreMulSum" begin
+    devs = collect(CUDACore.devices())
+    comms = NCCL.Communicators(devs)
+    n = length(devs)
+    N = 64
+
+    onranks(f) = [device!(() -> CuArray(f(r)), dev) for (r, dev) in zip(0:n-1, devs)]
+    fetchall(bufs) = [device!(() -> Array(buf), dev) for (buf, dev) in zip(bufs, devs)]
+
+    function allreduce(f, op)
+        send = onranks(f)
+        recv = onranks(r -> similar(f(r)))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Allreduce!(send[i], recv[i], op isa Function ? op(i - 1) : op, comms[i])
+            end
+        end
+        fetchall(recv)
+    end
+
+    function argument_error(f)
+        try
+            f()
+        catch err
+            err isa ArgumentError && return err.msg
+            rethrow()
+        end
+        return nothing
+    end
+
+    @test sprint(show, NCCL.PreMulSum(0.5f0)) == "NCCL.PreMulSum(0.5f0)"
+
+    # (small integers and halves, so that the results are exact)
+    @testset "$T" for T in (Float16, Float32, Float64, BFloat16)
+        vals(r) = T[r + 1 + i % 8 for i in 1:N]
+        expected = T(0.5) .* sum(vals, 0:n-1)
+        @test all(==(expected), allreduce(vals, NCCL.PreMulSum(0.5)))
+        @test all(==(expected), allreduce(vals, NCCL.PreMulSum(1//2)))
+
+        bufs = onranks(vals)
+        NCCL.group() do
+            for i in 1:n
+                @test NCCL.Allreduce!(bufs[i], NCCL.PreMulSum(0.5), comms[i]) === bufs[i]
+            end
+        end
+        @test all(==(expected), fetchall(bufs))
+    end
+
+    @testset "per-rank scalars" begin
+        # every rank multiplies its own values by its own scalar
+        vals(r) = Float32[r + i for i in 1:N]
+        expected = sum(r -> (r + 1) .* vals(r), 0:n-1)
+        @test all(==(expected), allreduce(vals, r -> NCCL.PreMulSum(r + 1)))
+    end
+
+    @testset "integers" begin
+        vals(r) = Int32[(r + 1) * (isodd(i) ? -1 : 1) for i in 1:N]
+        @test all(==(-3 .* sum(vals, 0:n-1)), allreduce(vals, NCCL.PreMulSum(-3)))
+        # an exactly representable scalar of another type is fine
+        @test all(==(2 .* sum(vals, 0:n-1)), allreduce(vals, NCCL.PreMulSum(2.0)))
+        # products and sums wrap around, like Julia's integer arithmetic
+        bytes(r) = UInt8[r + i for i in 1:N]
+        @test all(==(sum(r -> 0x81 .* bytes(r), 0:n-1)), allreduce(bytes, NCCL.PreMulSum(0x81)))
+        large(r) = Int64[typemax(Int64) ÷ 3 + r + i for i in 1:N]
+        @test all(==(sum(r -> 5 .* large(r), 0:n-1)), allreduce(large, NCCL.PreMulSum(5)))
+
+        # scalars that aren't representable in the element type
+        device!(devs[1]) do
+            x = CUDACore.zeros(Int32, 4)
+            @test_throws InexactError NCCL.Allreduce!(x, NCCL.PreMulSum(0.5), comms[1])
+            u = CUDACore.zeros(UInt32, 4)
+            @test_throws InexactError NCCL.Allreduce!(u, NCCL.PreMulSum(-1), comms[1])
+            @test_throws InexactError NCCL.Reduce!(u, NCCL.PreMulSum(2^40), comms[1])
+        end
+    end
+
+    @testset "Complex{$T}" for T in (Float16, Float32, Float64, BFloat16)
+        # distinct real and imaginary parts, to catch them being mixed up
+        vals(r) = [Complex{T}(r + 1, -(i % 8)) for i in 1:N]
+        expected = T(0.5) .* sum(vals, 0:n-1)
+        @test all(==(expected), allreduce(vals, NCCL.PreMulSum(0.5)))
+    end
+
+    @testset "rejected" begin
+        # complex scalars, even with a zero imaginary part
+        for scalar in (0.5im, 1.0 + 0im)
+            msg = argument_error(() -> NCCL.PreMulSum(scalar))
+            @test msg !== nothing && occursin("real and imaginary parts", msg)
+        end
+        device!(devs[1]) do
+            b = CuArray([true, false])
+            msg = argument_error(() -> NCCL.Allreduce!(b, NCCL.PreMulSum(1), comms[1]))
+            @test msg !== nothing && occursin("logical or", msg)
+            p = CuArray([Particle((1, 2, 3), 4)])
+            @test argument_error(() -> NCCL.Allreduce!(p, NCCL.PreMulSum(1), comms[1])) !== nothing
+        end
+    end
+
+    @testset "Reduce!" begin
+        vals(r) = Float32[r + i for i in 1:N]
+        expected = 0.25f0 .* sum(vals, 0:n-1)
+        for root in 0:n-1
+            send = onranks(vals)
+            recv = onranks(r -> zeros(Float32, N))
+            NCCL.group() do
+                for i in 1:n
+                    NCCL.Reduce!(send[i], i - 1 == root ? recv[i] : nothing,
+                                 NCCL.PreMulSum(0.25), comms[i]; root)
+                end
+            end
+            @test fetchall(recv)[root+1] == expected
+        end
+
+        # in place
+        bufs = onranks(vals)
+        NCCL.group() do
+            for i in 1:n
+                NCCL.Reduce!(bufs[i], NCCL.PreMulSum(0.25), comms[i]; root=0)
+            end
+        end
+        @test fetchall(bufs)[1] == expected
+    end
+
+    @testset "ReduceScatter!" begin
+        vals(r) = Float64[r + i for i in 1:2n]
+        expected = 2 .* sum(vals, 0:n-1)
+        block(i) = expected[2i-1:2i]
+
+        send = onranks(vals)
+        recv = onranks(r -> zeros(Float64, 2))
+        NCCL.group() do
+            for i in 1:n
+                NCCL.ReduceScatter!(send[i], recv[i], NCCL.PreMulSum(2), comms[i])
+            end
+        end
+        @test fetchall(recv) == [block(i) for i in 1:n]
+
+        # in place, with a single buffer
+        bufs = onranks(vals)
+        results = NCCL.group() do
+            map(1:n) do i
+                NCCL.ReduceScatter!(bufs[i], NCCL.PreMulSum(2), comms[i])
+            end
+        end
+        @test [device!(() -> Array(results[i]), devs[i]) for i in 1:n] == [block(i) for i in 1:n]
+    end
+
+    @testset "many operations in a group" begin
+        # every operation is issued with a different scalar, while the operator created for
+        # it is destroyed (and its slot reused) right after: NCCL has to copy the scalar
+        # when the operation is issued, not when the group ends
+        K = 50
+        vals(r) = Float32[r + i for i in 1:N]
+        sends = [onranks(vals) for _ in 1:K]
+        recvs = [onranks(r -> zeros(Float32, N)) for _ in 1:K]
+        NCCL.group() do
+            for k in 1:K, i in 1:n
+                NCCL.Allreduce!(sends[k][i], recvs[k][i], NCCL.PreMulSum(k), comms[i])
+            end
+        end
+        @test all(k -> all(==(k .* sum(vals, 0:n-1)), fetchall(recvs[k])), 1:K)
+    end
+
+    @testset "many operations" begin
+        send = onranks(r -> ones(Float32, N))
+        recv = onranks(r -> zeros(Float32, N))
+        for k in 1:1000
+            NCCL.group() do
+                for i in 1:n
+                    NCCL.Allreduce!(send[i], recv[i], NCCL.PreMulSum(k), comms[i])
+                end
+            end
+        end
+        @test all(==(fill(1000f0 * n, N)), fetchall(recv))
+    end
+
+    NCCL.destroy(comms)
+end
+
 # keep a stream busy for a while
 function spin(cycles)
     start = CUDACore.clock(UInt64)
