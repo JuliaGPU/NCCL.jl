@@ -1,7 +1,7 @@
 """
     NCCL.Allreduce!(
         sendbuf, recvbuf, op, comm::Communicator;
-        stream::CuStream=default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
 
 Reduce array `sendbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or [`NCCL.avg`](@ref)), writing the result to `recvbuf` to all ranks.
@@ -10,7 +10,7 @@ or [`NCCL.avg`](@ref)), writing the result to `recvbuf` to all ranks.
 - [`ncclAllReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclallreduce)
 """
 function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
-                    stream::CuStream=default_device_stream(comm))
+                    stream::Union{CuStream,Nothing}=nothing)
     count = length(recvbuf)
     @assert length(sendbuf) == count
     data_type = ncclDataType_t(eltype(recvbuf))
@@ -24,14 +24,14 @@ end
 """
     NCCL.Allreduce!(
         sendrecvbuf, op, comm::Communicator;
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
 
 
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or `[`NCCL.avg`](@ref)`), writing the result inplace to all ranks.
 """
 function Allreduce!(sendrecvbuf, op, comm::Communicator;
-                    stream::CuStream=default_device_stream(comm))
+                    stream::Union{CuStream,Nothing}=nothing)
     Allreduce!(sendrecvbuf, sendrecvbuf, op, comm; stream)
 end
 
@@ -39,7 +39,7 @@ end
     NCCL.Broadcast!(
         sendbuf, recvbuf, comm::Communicator;
         root = 0,
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
 
 Copies array the `sendbuf` on rank `root` to `recvbuf` on all ranks.
 
@@ -47,7 +47,7 @@ Copies array the `sendbuf` on rank `root` to `recvbuf` on all ranks.
 - [`ncclBroadcast`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclbroadcast)
 """
 function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
-                    stream::CuStream=default_device_stream(comm))
+                    stream::Union{CuStream,Nothing}=nothing)
     data_type = ncclDataType_t(eltype(recvbuf))
     count = length(recvbuf)
     root = Cint(root)
@@ -57,7 +57,7 @@ function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
     return recvbuf
 end
 function Broadcast!(sendrecvbuf, comm::Communicator;  root::Integer=0,
-                    stream::CuStream=default_device_stream(comm))
+                    stream::Union{CuStream,Nothing}=nothing)
     Broadcast!(sendrecvbuf, sendrecvbuf, comm; root, stream)
 end
 
@@ -66,7 +66,7 @@ end
     NCCL.Reduce!(
         sendbuf, recvbuf, comm::Communicator;
         root = 0,
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
 
 Reduce the array `sendrecvbuf` using `op` (one of `+`, `*`, `min`, `max`,
 or `[`NCCL.avg`](@ref)`), writing the result to `recvbuf` on rank `root`.
@@ -75,7 +75,7 @@ or `[`NCCL.avg`](@ref)`), writing the result to `recvbuf` on rank `root`.
 - [`ncclReduce`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclreduce)
 """
 function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
-                 stream::CuStream=default_device_stream(comm))
+                 stream::Union{CuStream,Nothing}=nothing)
     data_type = ncclDataType_t(eltype(recvbuf))
     count = length(recvbuf)
     _op = ncclRedOp_t(op)
@@ -86,14 +86,14 @@ function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
     return recvbuf
 end
 function Reduce!(sendrecvbuf, op, comm::Communicator; root::Integer=0,
-                 stream::CuStream=default_device_stream(comm))
+                 stream::Union{CuStream,Nothing}=nothing)
     Reduce!(sendrecvbuf, sendrecvbuf, op, comm; root, stream)
 end
 
 """
     NCCL.Allgather!(
         sendbuf, recvbuf, comm::Communicator;
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
     )
 
 Concatenate `sendbuf` from each rank into `recvbuf` on all ranks.
@@ -102,10 +102,10 @@ Concatenate `sendbuf` from each rank into `recvbuf` on all ranks.
 - [`ncclAllGather`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclallgather)
 """
 function Allgather!(sendbuf, recvbuf, comm::Communicator;
-                    stream::CuStream=default_device_stream(comm))
+                    stream::Union{CuStream,Nothing}=nothing)
     data_type = ncclDataType_t(eltype(recvbuf))
     sendcount = length(sendbuf)
-    @assert length(recvbuf) == sendcount * size(comm)
+    @assert length(recvbuf) == sendcount * nranks(comm)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         ncclAllGather(sendptr, recvptr, sendcount, data_type, comm_handle, stream_handle)
     end
@@ -115,7 +115,7 @@ end
 """
     NCCL.ReduceScatter!(
         sendbuf, recvbuf, op, comm::Communicator;
-        stream::CuStream = default_device_stream(comm))
+        stream::Union{CuStream,Nothing} = nothing)
     )
 
 Reduce `sendbuf` from each rank using `op`, and leave the reduced result
@@ -126,9 +126,9 @@ scattered over the devices such that `recvbuf` on each rank will contain the
 - [`ncclReduceScatter`](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/api/colls.html#ncclreducescatter)
 """
 function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
-                        stream::CuStream=default_device_stream(comm))
+                        stream::Union{CuStream,Nothing}=nothing)
     recvcount = length(recvbuf)
-    @assert length(sendbuf) == recvcount * size(comm)
+    @assert length(sendbuf) == recvcount * nranks(comm)
     data_type = ncclDataType_t(eltype(recvbuf))
     _op = ncclRedOp_t(op)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
