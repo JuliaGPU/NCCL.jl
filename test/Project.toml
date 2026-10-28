@@ -1,4 +1,5 @@
 [deps]
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

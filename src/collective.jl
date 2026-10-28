@@ -5,6 +5,8 @@
 
 Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 [`NCCL.avg`](@ref)), and write the result to `recvbuf` on all ranks. Returns `recvbuf`.
+Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
+or) and `min` (logical and).
 
 `sendbuf` and `recvbuf` must have the same element type and length. With a single buffer
 `sendrecvbuf`, the operation is performed in place.
@@ -23,10 +25,8 @@ function Allreduce!(sendbuf, recvbuf, op, comm::Communicator;
     check_buffer(comm, sendbuf, "sendbuf")
     check_buffer(comm, recvbuf, "recvbuf")
     check_eltypes(sendbuf, recvbuf)
-    count = length(recvbuf)
-    check_length(sendbuf, count, "sendbuf")
-    data_type = ncclDataType_t(eltype(recvbuf))
-    _op = ncclRedOp_t(op)
+    check_length(sendbuf, length(recvbuf), "sendbuf")
+    data_type, count, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         check_overlap(sendptr, sendbuf, recvptr, recvbuf)
         ncclAllReduce(sendptr, recvptr, count, data_type, _op, comm_handle, stream_handle)
@@ -63,9 +63,8 @@ function Broadcast!(sendbuf, recvbuf, comm::Communicator; root::Integer=0,
     check_buffer(comm, sendbuf, "sendbuf")
     check_buffer(comm, recvbuf, "recvbuf")
     check_eltypes(sendbuf, recvbuf)
-    count = length(recvbuf)
-    check_length(sendbuf, count, "sendbuf")
-    data_type = ncclDataType_t(eltype(recvbuf))
+    check_length(sendbuf, length(recvbuf), "sendbuf")
+    data_type, count = lower_movement(eltype(recvbuf), length(recvbuf))
     root = Cint(root)
     check_peer(comm, root, "root")
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
@@ -87,6 +86,8 @@ end
 
 Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 [`NCCL.avg`](@ref)), and write the result to `recvbuf` on rank `root`. Returns `recvbuf`.
+Complex numbers can only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical
+or) and `min` (logical and).
 
 `sendbuf` and `recvbuf` must have the same element type and length; `recvbuf` is only
 written on the root. With a single buffer `sendrecvbuf`, the operation is performed in
@@ -106,10 +107,8 @@ function Reduce!(sendbuf, recvbuf, op, comm::Communicator; root::Integer=0,
     check_buffer(comm, sendbuf, "sendbuf")
     check_buffer(comm, recvbuf, "recvbuf")
     check_eltypes(sendbuf, recvbuf)
-    count = length(recvbuf)
-    check_length(sendbuf, count, "sendbuf")
-    data_type = ncclDataType_t(eltype(recvbuf))
-    _op = ncclRedOp_t(op)
+    check_length(sendbuf, length(recvbuf), "sendbuf")
+    data_type, count, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
     root = Cint(root)
     check_peer(comm, root, "root")
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
@@ -149,10 +148,9 @@ function Allgather!(sendbuf, recvbuf, comm::Communicator;
     check_buffer(comm, sendbuf, "sendbuf")
     check_buffer(comm, recvbuf, "recvbuf")
     check_eltypes(sendbuf, recvbuf)
-    sendcount = length(sendbuf)
-    check_length(recvbuf, sendcount * comm.nranks, "recvbuf")
-    data_type = ncclDataType_t(eltype(recvbuf))
-    inplace_offset = comm.rank * sendcount * Base.elsize(sendbuf)
+    check_length(recvbuf, length(sendbuf) * comm.nranks, "recvbuf")
+    data_type, sendcount = lower_movement(eltype(sendbuf), length(sendbuf))
+    inplace_offset = comm.rank * length(sendbuf) * Base.elsize(sendbuf)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace_offset,
                       inplace="sendbuf must be the part of recvbuf for this rank")
@@ -167,7 +165,9 @@ end
 
 Reduce `sendbuf` over all ranks using `op` (one of `+`, `*`, `min`, `max`, or
 [`NCCL.avg`](@ref)), and scatter the result over the ranks: `recvbuf` on rank `i` receives
-the `i`-th block of the result (counting from 0). Returns `recvbuf`.
+the `i`-th block of the result (counting from 0). Returns `recvbuf`. Complex numbers can
+only be reduced with `+` and `NCCL.avg`, and `Bool`s with `max` (logical or) and `min`
+(logical and).
 
 `sendbuf` and `recvbuf` must have the same element type, and `sendbuf` must have
 `nranks(comm)` times as many elements as `recvbuf`. The operation is performed in place
@@ -187,11 +187,9 @@ function ReduceScatter!(sendbuf, recvbuf, op, comm::Communicator;
     check_buffer(comm, sendbuf, "sendbuf")
     check_buffer(comm, recvbuf, "recvbuf")
     check_eltypes(sendbuf, recvbuf)
-    recvcount = length(recvbuf)
-    check_length(sendbuf, recvcount * comm.nranks, "sendbuf")
-    data_type = ncclDataType_t(eltype(recvbuf))
-    _op = ncclRedOp_t(op)
-    inplace_offset = -comm.rank * recvcount * Base.elsize(recvbuf)
+    check_length(sendbuf, length(recvbuf) * comm.nranks, "sendbuf")
+    data_type, recvcount, _op = lower_reduction(eltype(recvbuf), length(recvbuf), op)
+    inplace_offset = -comm.rank * length(recvbuf) * Base.elsize(recvbuf)
     submit(comm, stream, sendbuf, recvbuf) do sendptr, recvptr, comm_handle, stream_handle
         check_overlap(sendptr, sendbuf, recvptr, recvbuf; inplace_offset,
                       inplace="recvbuf must be the block of sendbuf for this rank")

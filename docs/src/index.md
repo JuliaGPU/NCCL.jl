@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = NCCL
+```
+
 # NCCL.jl
 
  A Julia wrapper for the [NVIDIA Collective Communications Library (NCCL)](https://developer.nvidia.com/nccl).
@@ -15,9 +19,26 @@ calling NCCL: buffers whose lengths don't fit the operation throw a `DimensionMi
 other invalid arguments (e.g. non-contiguous buffers, mismatched element types, ranks out of
 range, or partially overlapping buffers) an `ArgumentError`.
 
-```@meta
-CurrentModule = NCCL
-```
+## Element types
+
+NCCL natively supports buffers of `Int8`, `UInt8`, `Int32`, `UInt32`, `Int64`, `UInt64`,
+`Float16`, `Float32`, `Float64` and `BFloat16` (from BFloat16s.jl) elements, which can be
+used with every operation and reduction operator. Some other element types are passed to
+NCCL as one of these:
+
+- complex numbers with `Float16`, `Float32`, `Float64` or `BFloat16` parts are passed as
+  pairs of real numbers. NCCL then reduces the real and imaginary parts separately, which is
+  only correct for `+` and [`NCCL.avg`](@ref): reducing complex numbers with `*`, `max` or
+  `min` throws an `ArgumentError`.
+- `Bool`s are passed as bytes. They can only be reduced with `max` (logical or) and `min`
+  (logical and), since sums and averages of booleans are not booleans.
+- other `isbits` types (e.g. `Int16`, `Char`, tuples or immutable structs) are passed as
+  bytes, and can only be copied: they are supported by data movement operations
+  ([`Broadcast!`](@ref), [`Allgather!`](@ref), [`Send`](@ref) and [`Recv!`](@ref)), but not
+  by reductions. Padding bytes in such values are copied as well.
+
+Other element types, i.e. types that aren't `isbits` (including `isbits` unions), and types
+of size zero (e.g. `Nothing`), are not supported.
 
 ## Library
 
