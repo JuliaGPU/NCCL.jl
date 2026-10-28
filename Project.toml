@@ -9,10 +9,17 @@ CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
 GPUToolbox = "096a3bc2-3ced-46d0-87f4-dd12716f4bfc"
 NCCL_jll = "4d6d38e4-5b87-5e63-912a-873ff2d649b7"
 
+[weakdeps]
+MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+
+[extensions]
+NCCLMPIExt = "MPI"
+
 [compat]
 BFloat16s = "0.5, 0.6"
 CEnum = "0.5, 1"
 CUDACore = "6.3"
 GPUToolbox = "3"
+MPI = "0.20"
 NCCL_jll = "2.32.3"
 julia = "1.10"

@@ -296,6 +296,41 @@ function check_rank(nranks, rank)
     return
 end
 
+# Creating a communicator in two steps: `prepare_init` does the part that only involves this
+# rank (validating and converting the arguments, and activating the device), and
+# `init_prepared` joins the communicator. When the former fails, the rank doesn't join, so
+# ranks that bootstrap together (see the MPI extension) run it first and agree on its
+# outcome; nothing rank-local can fail after that. `device === nothing` selects the current
+# device.
+function prepare_init(nranks::Integer, rank::Integer,
+                      device::Union{CuDevice,Integer,Nothing}, config::Union{Config,Nothing})
+    device = device === nothing ? CUDACore.device() :
+             device isa CuDevice ? device : CuDevice(device)
+    nranks = Cint(nranks)
+    rank = Cint(rank)
+    check_rank(nranks, rank)
+    check_blocking()
+    config = something(config, Config())
+    raw_config = Ref(ncclConfig_t(config))
+    CUDACore.device!(Returns(nothing), device)
+    return (; nranks, rank, device, config, raw_config)
+end
+
+function init_prepared(prepared, id::UniqueID)
+    (; nranks, rank, device, config, raw_config) = prepared
+    handle_ref = Ref{ncclComm_t}(C_NULL)
+    GC.@preserve config try
+        CUDACore.device!(device) do
+            check_group_owner()
+            ncclCommInitRankConfig(handle_ref, nranks, id, rank, raw_config)
+        end
+    catch
+        abort_failed((handle_ref[],))
+        rethrow()
+    end
+    return Communicator(handle_ref[], device, rank, nranks, config)
+end
+
 """
     NCCL.Communicator(nranks, rank, id::UniqueID;
                       device=CUDACore.device(), config=nothing) :: Communicator
@@ -336,28 +371,64 @@ end
 function Communicator(nranks::Integer, rank::Integer, id::UniqueID;
                       device::Union{CuDevice,Integer}=CUDACore.device(),
                       config::Union{Config,Nothing}=nothing)
-    device isa CuDevice || (device = CuDevice(device))
-    nranks = Cint(nranks)
-    rank = Cint(rank)
-    check_rank(nranks, rank)
-    check_blocking()
-    config = something(config, Config())
-    raw_config = Ref(ncclConfig_t(config))
-    handle_ref = Ref{ncclComm_t}(C_NULL)
-    GC.@preserve config try
-        CUDACore.device!(device) do
-            check_group_owner()
-            ncclCommInitRankConfig(handle_ref, nranks, id, rank, raw_config)
-        end
-    catch
-        abort_failed((handle_ref[],))
-        rethrow()
-    end
-    return Communicator(handle_ref[], device, rank, nranks, config)
+    init_prepared(prepare_init(nranks, rank, device, config), id)
 end
 
 function Communicator(f, nranks::Integer, rank::Integer, id::UniqueID; kwargs...)
     with_communicators(f, Communicator(nranks, rank, id; kwargs...))
+end
+
+# implemented by the MPI extension (ext/NCCLMPIExt.jl); documented here so that the
+# documentation is available without loading MPI.jl
+"""
+    NCCL.Communicator(mpicomm::MPI.Comm;
+                      device=CUDACore.device(), config=nothing) :: Communicator
+    NCCL.Communicator(f, mpicomm::MPI.Comm; device, config)
+
+Create a communicator with the same ranks as the MPI communicator `mpicomm`. Every rank of
+`mpicomm` has to call this, and becomes the rank of the new communicator with the same index:
+`NCCL.rank(comm) == MPI.Comm_rank(mpicomm)` and `NCCL.nranks(comm) == MPI.Comm_size(mpicomm)`.
+
+This method requires MPI.jl to be loaded (`using MPI`), and MPI to be initialized
+(`MPI.Init()`). Rank 0 of `mpicomm` creates the [`NCCL.UniqueID`](@ref) and broadcasts it
+to the other ranks over `mpicomm`, after which all ranks create the communicator as with
+[`NCCL.Communicator(nranks, rank, id)`](@ref Communicator),
+which also describes the keyword arguments and the do-block form.
+
+Each rank uses `device`, the current device by default, and the ranks on one node have to
+use different devices. A common way to achieve this is to number the processes on each node
+with an MPI communicator of the processes that share memory, and to select a device based
+on that number before creating the communicator:
+
+```julia
+using MPI, CUDACore, NCCL
+MPI.Init()
+world_rank = MPI.Comm_rank(MPI.COMM_WORLD)
+node_comm = MPI.Comm_split_type(MPI.COMM_WORLD, MPI.COMM_TYPE_SHARED, world_rank)
+MPI.Comm_size(node_comm) <= ndevices() ||
+    error("more processes on this node than GPUs")
+CUDACore.device!(MPI.Comm_rank(node_comm))
+
+NCCL.Communicator(MPI.COMM_WORLD) do comm
+    NCCL.Allreduce!(buf, +, comm)
+end
+```
+
+Before initializing the communicator, the ranks check their arguments (e.g. that `device`
+is valid) and agree over `mpicomm` on whether all of them succeeded, so that an invalid
+argument on one rank makes all ranks throw, rather than leaving the others waiting for it.
+Errors during the initialization itself, e.g. a network failure, can still leave the other
+ranks blocked: as with any collective failure in an MPI program, handle them with a job-wide
+policy, e.g. by calling `MPI.Abort`.
+"""
+Communicator(mpicomm)
+
+# point users to MPI.jl when they call the method of the extension without loading it
+function mpi_hint(io, exc, argtypes, kwargs)
+    exc.f === Communicator || return
+    length(argtypes) == 1 || (length(argtypes) == 2 && argtypes[1] <: Function) || return
+    Base.get_extension(@__MODULE__, :NCCLMPIExt) === nothing || return
+    print(io, "\nTo create a communicator from an MPI communicator, load MPI.jl (`using MPI`).")
 end
 
 """

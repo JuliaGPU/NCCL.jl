@@ -15,6 +15,9 @@ include("buffers.jl")
 include("pointtopoint.jl")
 include("collective.jl")
 
-__init__() = force_blocking()
+function __init__()
+    force_blocking()
+    Base.Experimental.register_error_hint(mpi_hint, MethodError)
+end
 
 end
